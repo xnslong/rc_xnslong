@@ -1,0 +1,13 @@
+event_type: "user.registered"
+description: "用户注册成功事件"
+version: 1
+schema:
+  type: object
+  required: [user_id, name]
+  properties:
+    user_id:
+      type: string
+      description: "用户标识"
+    name:
+      type: string
+      description: "用户名称"

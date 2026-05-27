@@ -1,0 +1,19 @@
+# TODO: 供应商接入配置示例
+# 设计文档: /doc/requirements/202605-notification-design.md §3.2
+vendor_id: example
+name: "示例供应商"
+url: "https://api.example.com/v3/contacts/@{payload.user_id}"
+method: POST
+headers:
+  Content-Type: application/json
+  Authorization: "Bearer your-token"
+timeout: 30s
+retry:
+  max_attempts: 3
+  base_delay: 10s
+judgment:
+  success:
+    - http_status
+  retryable:
+    - http_status: 429
+    - http_status: 5xx

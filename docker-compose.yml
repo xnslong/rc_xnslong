@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: notify
+      POSTGRES_PASSWORD: notify
+      POSTGRES_DB: notification
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notify -d notification"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: notify
+      RABBITMQ_DEFAULT_PASS: notify
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

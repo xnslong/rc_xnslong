@@ -1,0 +1,10 @@
+# TODO: 路由规则示例
+# 设计文档: /doc/requirements/202605-notification-design.md §3.5
+# MVP: 仅支持 event_type → vendor_id 简单映射
+rules:
+  - event_type: order.paid
+    vendor_id: crm_system
+  - event_type: order.refunded
+    vendor_id: crm_system
+  - event_type: user.registered
+    vendor_id: sms_gateway

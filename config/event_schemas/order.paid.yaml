@@ -1,0 +1,30 @@
+# TODO: 事件类型 Schema 示例
+# 设计文档: /doc/requirements/202605-notification-design.md §3.4
+title: order.paid
+type: object
+properties:
+  order_id:
+    type: string
+  user_id:
+    type: string
+  user_name:
+    type: string
+  user_email:
+    type: string
+    format: email
+  amount:
+    type: integer
+    x-format: cent_precision
+    description: "金额，单位分"
+  paid_at:
+    type: integer
+    x-format: unix_s
+    description: "支付时间戳"
+  tier:
+    type: string
+    enum: [standard, premium, vip]
+required:
+  - order_id
+  - user_id
+  - amount
+  - paid_at
