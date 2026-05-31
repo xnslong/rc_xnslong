@@ -40,40 +40,33 @@
   - [UC-05 供应商管理](#uc-05-供应商管理)
   - [UC-06 通知查询与监控](#uc-06-通知查询与监控)
   - [UC-07 事件类型路由](#uc-07-事件类型路由)
-- [3. 通知消息与供应商 API 之间的数据映射](#3-通知消息与供应商-api-之间的数据映射)
+  - [2.1 端到端业务流程](#21-端到端业务流程)
+- [3. 请求构造](#3-请求构造)
   - [3.1 问题的核心](#31-问题的核心)
   - [3.2 核心思路：事件类型作为数据契约的锚点](#32-核心思路事件类型作为数据契约的锚点)
   - [3.3 数据契约的维护](#33-数据契约的维护)
   - [3.4 映射关系的几种组织方式](#34-映射关系的几种组织方式)
   - [3.5 映射规则需要表达的语义](#35-映射规则需要表达的语义)
   - [3.6 谁"知道"格式](#36-谁知道格式)
-- [4. 供应商 API 格式差异分析](#4-供应商-api-格式差异分析)
-  - [4.1 实际场景中的格式差异](#41-实际场景中的格式差异)
-  - [4.2 渲染逻辑的复杂度谱系](#42-渲染逻辑的复杂度谱系)
-  - [4.3 供应商响应格式与成功判定](#43-供应商响应格式与成功判定)
-- [5. 供应商 API 签名机制分析](#5-供应商-api-签名机制分析)
-  - [5.1 签名算法类型](#51-签名算法类型)
-  - [5.2 签名的通用构造模式](#52-签名的通用构造模式)
-  - [5.3 规范化 Header](#53-规范化-header)
-  - [5.4 Query 参数的规范化处理](#54-query-参数的规范化处理)
-  - [5.5 签名结果的携带方式](#55-签名结果的携带方式)
-  - [5.6 代理网关环境下的签名处理](#56-代理网关环境下的签名处理)
-  - [5.7 需求层面的结论](#57-需求层面的结论)
-- [6. 供应商鉴权方式](#6-供应商鉴权方式)
-- [7. 变化点分析](#7-变化点分析)
-  - [7.1 不易变的部分 (Stable)](#71-不易变的部分-stable)
-  - [7.2 容易变的部分 (Volatile)](#72-容易变的部分-volatile)
-- [8. 非功能性需求](#8-非功能性需求)
-  - [8.1 可靠性与送达保证](#81-可靠性与送达保证)
-  - [8.2 故障隔离与稳定](#82-故障隔离与稳定)
-  - [8.3 性能](#83-性能)
-  - [8.4 调用方管理与供应商 Quota 管理](#84-调用方管理与供应商-quota-管理)
-  - [8.5 可观测性](#85-可观测性)
-  - [8.6 安全性](#86-安全性)
-  - [8.7 可维护性](#87-可维护性)
-  - [8.8 可测试性](#88-可测试性)
-  - [8.9 数据归档](#89-数据归档)
-- [9. MVP 范围](#9-mvp-范围)
+  - [3.7 请求构造的复杂度层级](#37-请求构造的复杂度层级)
+  - [3.8 鉴权方式](#38-鉴权方式)
+  - [3.9 签名需求](#39-签名需求)
+- [4. 响应判定](#4-响应判定)
+  - [4.1 响应成功判定需求](#41-响应成功判定需求)
+- [5. 变化点分析](#5-变化点分析)
+  - [5.1 不易变的部分 (Stable)](#51-不易变的部分-stable)
+  - [5.2 容易变的部分 (Volatile)](#52-容易变的部分-volatile)
+- [6. 非功能性需求](#6-非功能性需求)
+  - [6.1 可靠性与送达保证](#61-可靠性与送达保证)
+  - [6.2 故障隔离与稳定](#62-故障隔离与稳定)
+  - [6.3 性能](#63-性能)
+  - [6.4 调用方管理与供应商 Quota 管理](#64-调用方管理与供应商-quota-管理)
+  - [6.5 可观测性](#65-可观测性)
+  - [6.6 安全性](#66-安全性)
+  - [6.7 可维护性](#67-可维护性)
+  - [6.8 可测试性](#68-可测试性)
+  - [6.9 数据归档](#69-数据归档)
+- [7. MVP 范围](#7-mvp-范围)
 - [附录 A — R1 Review详情](#附录-a--r1-review详情)
   - [A.1 "即抛即忘"的澄清](#a1-即抛即忘的澄清)
   - [A.2 Body template 不是需求](#a2-body-template-不是需求)
@@ -87,6 +80,21 @@
   - [B.1 角色定义](#b1-角色定义)
   - [B.2 映射规则的归属](#b2-映射规则的归属)
   - [B.3 隔离原则](#b3-隔离原则)
+- [附录 C — 供应商调研详情](#附录-c--供应商调研详情)
+  - [C.1 请求格式与响应判定](#c1-请求格式与响应判定)
+    - [C.1.1 请求格式的差异维度](#c11-请求格式的差异维度)
+    - [C.1.2 供应商 API 示例](#c12-供应商-api-示例)
+    - [C.1.3 响应状态码](#c13-响应状态码)
+    - [C.1.4 "200 但实际失败"——各供应商案例](#c14-200-但实际失败各供应商案例)
+  - [C.2 签名机制](#c2-签名机制)
+    - [C.2.1 签名算法类型](#c21-签名算法类型)
+    - [C.2.2 签名的通用构造模式](#c22-签名的通用构造模式)
+    - [C.2.3 规范化 Header](#c23-规范化-header)
+    - [C.2.4 Query 参数的规范化处理](#c24-query-参数的规范化处理)
+    - [C.2.5 签名结果的携带方式](#c25-签名结果的携带方式)
+    - [C.2.6 代理网关环境下的签名处理](#c26-代理网关环境下的签名处理)
+  - [C.3 鉴权方式](#c3-鉴权方式)
+    - [C.3.1 常见鉴权方式](#c31-常见鉴权方式)
 
 ---
 
@@ -249,7 +257,7 @@ flowchart LR
 |------|------|
 | **场景** | 业务系统在关键事件发生时，向通知系统提交一条通知 |
 | **解决的问题** | 业务系统不需要关注外部 API 的细节（地址、格式、鉴权），只需表达"发生了什么事"。同步返回，避免阻塞业务主流程 |
-| **行为** | 业务系统调用通知系统的内部 API，**携带调用方身份标识**，按**事件类型对应的数据契约**传入结构化数据。系统验证后写入持久化存储，立即返回通知 ID |
+| **行为** | 业务系统调用通知系统的内部 API，**携带调用方身份标识**，按**事件类型对应的数据契约**传入结构化数据。系统验证后可靠记录通知内容，立即返回通知 ID |
 
 > **说明**：同一个事件类型可能来自多个不同的业务系统（例如 "order.paid" 可能来自主站订单系统和第三方订单同步服务），因此调用方身份是提交的必要信息，用于追溯来源和责任划分。
 
@@ -257,13 +265,13 @@ flowchart LR
 sequenceDiagram
     participant Biz as 业务系统
     participant API as 通知系统 API
-    participant Store as 持久化存储
+    participant Notif as 通知记录
 
     Note over Biz: 业务按事件类型约定提交数据
     Biz->>API: caller: "order-service"<br/>event: "order.paid"<br/>payload: { order_id, user_id, amount, ... }
     API->>API: 校验调用方身份 + 事件数据
-    API->>Store: 持久化通知任务
-    Store-->>API: ok
+    API->>Notif: 可靠记录通知
+    Notif-->>API: ok
     API-->>Biz: 返回通知 ID
     Note over Biz: 业务系统无需等待外部 API 完成
     Note over API: 系统内部后续异步投递<br/>状态可查询、可追踪
@@ -275,127 +283,30 @@ sequenceDiagram
 
 | 项目 | 内容 |
 |------|------|
-| **场景** | 系统从队列中取出待发送的通知，按供应商配置进行格式转换并调用外部 API |
+| **场景** | 系统取出待发送的通知，按供应商配置进行格式转换并调用外部 API |
 | **解决的问题** | 将一条内部事件转换为特定供应商能理解的请求格式，并完成 HTTP 调用 |
-| **行为** | 后台消费者从队列拉取任务，根据路由配置确定目标供应商，按供应商配置构造请求并发出。根据**供应商对应的响应判定规则**（状态码 + body 业务状态码）判断是否成功 |
+| **行为** | 后台取出待投递通知，根据路由配置确定目标供应商，按供应商配置构造请求并发出。根据**供应商对应的响应判定规则**（状态码 + body 业务状态码）判断是否成功 |
 
 #### 供应商 API 示例
 
-为理解投递格式差异，以下是三种典型场景的外部 API 示例：
+为理解投递格式差异，以下是在实际调研中遇到的五种典型场景（详见[附录 C](#附录-c--供应商调研详情)）：
 
-**示例 1：广告平台回传用户注册**
-
-```
-POST https://adplatform.com/tracking
-Content-Type: application/json
-X-API-Key: abc123
-
-{
-  "event": "register",
-  "user_id": "u_12345",
-  "timestamp": 1716259200000,
-  "click_id": "click_67890"
-}
-```
-
-**示例 2：CRM 系统更新联系人状态**
-
-```
-PATCH https://crm.company.com/api/v3/contacts/789
-Authorization: Bearer eyJhbGci...
-Content-Type: application/json
-
-{
-  "properties": {
-    "lifecyclestage": "customer",
-    "last_paid_date": "2026-05-20"
-  }
-}
-```
-
-**示例 3：库存系统变更通知**
-
-```
-POST https://inventory.fulu.com/api/stock/change
-Content-Type: application/json
-Sign: MD5(body+secret)
-
-{
-  "product_id": 10000570,
-  "changed_type": 2,
-  "quantity": -1,
-  "product_sale_status": "上架"
-}
-```
-
-**示例 4：金融/账单系统通知（XML 格式）**
-
-```
-POST https://billing.ariasys.com/events
-Content-Type: application/xml
-Authorization: Bearer eyJhbGci...
-
-<?xml version="1.0" encoding="UTF-8"?>
-<apf2doc>
-    <request>
-        <action>A</action>
-        <class>N</class>
-        <auth_key>abc123</auth_key>
-    </request>
-    <account>
-        <acct_no>789012</acct_no>
-        <userid>jane.smith</userid>
-    </account>
-    <event_data>
-        <event>
-            <event_id>4001</event_id>
-            <event_label>Account Created</event_label>
-        </event>
-    </event_data>
-</apf2doc>
-```
-
-**示例 5：银行 SOAP/XML 通知**
-
-```
-POST https://jackhenry.com/jxchange/NotSndAdd
-Content-Type: text/xml; charset=utf-8
-SOAPAction: http://jackhenry.com/ws/NotSndAdd
-
-<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
-  <SOAP-ENV:Header/>
-  <SOAP-ENV:Body>
-    <NotSndAdd xmlns="http://jackhenry.com/jxchange/TPG/2008">
-      <MsgRqHdr>
-        <jXchangeHdr>
-          <AuditUsrId>sysadmin</AuditUsrId>
-          <InstRtId>003003003</InstRtId>
-          <InstEnv>PROD</InstEnv>
-        </jXchangeHdr>
-      </MsgRqHdr>
-      <AlrtName>AccountAlert_v1</AlrtName>
-      <AlrtSndInfoRec>
-        <SndAlrtArray>
-          <SndAlrtRec>
-            <ConsmRecipId>user001</ConsmRecipId>
-          </SndAlrtRec>
-        </SndAlrtArray>
-      </AlrtSndInfoRec>
-    </NotSndAdd>
-  </SOAP-ENV:Body>
-</SOAP-ENV:Envelope>
-```
+- **L1 — 固定模板**：请求结构固定，仅替换 payload 中的字段值。例如广告平台回传事件，所有 event 类型都用同一个请求骨架，只有 `user_id`、`timestamp` 这样的值不同，没有条件判断和结构变化
+- **L2 — 条件构造**：多个事件类型路由到同一个供应商，但该供应商的请求中包含哪些字段取决于具体的事件类型或数据值。**这是映射层面的条件逻辑，不是路由层面的差异**。例如 "order.paid" 和 "user.registered" 都投递给同一个 CRM 系统，但 order.paid 携带 `{lifecyclestage: "customer", last_paid_date: ...}`，user.registered 携带 `{lifecyclestage: "lead", source: "website"}`——同一供应商的请求结构随事件类型变化。或者同一事件中金额超阈值时多带一个 `approval_required: true` 字段
+- **L3 — 数据变换**：payload 的字段不能直接映射到供应商请求，需要重命名、嵌套、拆分或聚合。例如 payload 中有 `product_id`、`quantity`、`warehouse` 三个独立字段，但供应商要求 `{"items": [{"product_id": "...", "qty": 1, "location": "SH"}]}`——字段重命名（quantity→qty、warehouse→location）并包装到数组中
+- **L4 — 异构格式**：供应商要求非 JSON 格式，如 XML 或 SOAP 请求，整个请求体需要用不同的序列化方式构造
+- **L5 — 计算/签名**：发送时需要在请求中动态计算值（如 HMAC 签名、OAuth Token），这些值不能在配置时预计算，只能在实际发送时刻生成
 
 **用例行为：**
 
 ```mermaid
 sequenceDiagram
-    participant Queue as 持久化队列
+    participant Task as 待投递通知
     participant Worker as 投递 Worker
     participant Config as 供应商配置
     participant Vendor as 外部供应商 API
 
-    Queue-->>Worker: 取出通知任务
+    Task-->>Worker: 取出待投递通知
     Worker->>Config: 获取供应商配置
     Config-->>Worker: 端点、鉴权、请求格式
     Worker->>Worker: 根据配置构造请求
@@ -403,11 +314,11 @@ sequenceDiagram
     alt 成功（按供应商规则判定）
         Vendor-->>Worker: 响应
         Worker->>Worker: 按供应商规则判定成功
-        Worker->>Queue: 标记完成
+        Worker->>Task: 更新为已送达
     else 失败（按供应商规则判定）
         Vendor-->>Worker: 错误响应 / 超时
         Worker->>Worker: 按供应商规则判定失败
-        Worker->>Queue: 标记失败，触发重试
+        Worker->>Task: 标记失败，触发重试
     end
 ```
 
@@ -424,7 +335,7 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING: 提交通知
-    PENDING --> DELIVERING: Worker 取出
+    PENDING --> DELIVERING: 开始投递
     DELIVERING --> DELIVERING: 失败（判定失败）
     DELIVERING --> SUCCEEDED: 成功（判定成功）
     DELIVERING --> DEAD_LETTER: 超过最大重试次数
@@ -438,7 +349,7 @@ stateDiagram-v2
 
 | 项目 | 内容 |
 |------|------|
-| **场景** | 多次重试依然失败的通知进入死信队列，等待人工处理 |
+| **场景** | 多次重试依然失败的通知进入死信状态，等待人工处理 |
 | **解决的问题** | 避免无效重试浪费资源，同时保留失败记录以便排查和恢复 |
 | **行为** | 死信记录保存完整请求/响应/错误信息。运维人员可查看详情、手动重试或丢弃 |
 
@@ -449,7 +360,7 @@ flowchart LR
     B --> D[手动重试]
     B --> E[标记丢弃]
     C --> B
-    D --> F[重新入队投递]
+    D --> F[重新投递]
     E --> G[归档]
 ```
 
@@ -511,7 +422,75 @@ flowchart LR
 
 ---
 
-## 3. 通知消息与供应商 API 之间的数据映射
+## 2.1 端到端业务流程
+
+各用例并非孤立存在，它们共同组成一条完整的通知处理链路。以下是通知从提交到送达的完整业务流程：
+
+```mermaid
+sequenceDiagram
+    participant Biz as 业务系统
+    participant SYS as 通知系统
+    participant VA as 供应商 A
+    participant VB as 供应商 B
+
+    rect rgb(245, 245, 250)
+        Note over Biz,SYS: ① 提交
+        Biz->>SYS: 提交事件数据
+        SYS->>SYS: ② 验证数据格式
+        SYS->>SYS: ③ 可靠记录
+        SYS-->>Biz: 返回通知 ID
+    end
+
+    rect rgb(250, 245, 240)
+        Note over SYS: ④ 路由匹配
+        SYS->>SYS: 匹配供应商 A
+        SYS->>SYS: 匹配供应商 B
+    end
+
+    par ⑤⑥ 格式转换与投递（供应商间独立）
+        rect rgb(240, 250, 240)
+            SYS->>SYS: ⑤ 转换 → 映射+鉴权
+            SYS->>VA: ⑥ 投递
+            VA-->>SYS: 响应
+            SYS->>SYS: ⑦ 判定结果
+        end
+        rect rgb(240, 250, 240)
+            SYS->>SYS: ⑤ 转换 → 映射+鉴权
+            SYS->>VB: ⑥ 投递
+            VB-->>SYS: 响应
+            SYS->>SYS: ⑦ 判定结果
+        end
+    end
+
+    rect rgb(245, 245, 250)
+        Note over SYS: ⑧ 记录状态
+        SYS->>SYS: 更新通知状态<br/>（成功/重试/死信）
+    end
+
+    Note over Biz,VB: 同一条通知可投递到多个供应商<br/>各供应商的投递相互独立
+```
+各步骤间的职责归属：
+
+| 步骤 | 归属 | 对应用例 |
+|------|------|----------|
+| ① 提交事件数据 | 业务系统主动发起 | UC-01 |
+| ② 验证数据格式 | 通知系统处理 | UC-01 |
+| ③ 可靠记录与返回 ID | 通知系统处理 | UC-01 |
+| ④ 根据事件类型路由 | 通知系统内部决策 | UC-07 |
+| ⑤ 格式转换（映射 + 鉴权/签名） | 通知系统处理 | UC-02 |
+| ⑥ 投递 | 通知系统调用供应商 | UC-02 |
+| ⑦ 判定结果与重试 | 通知系统处理 | UC-02 / UC-03 / UC-04 |
+| ⑧ 提供可见性 | 通知系统提供 | UC-06 |
+
+### 流程要点说明
+
+- **异步解耦**：步骤 ①–③ 与 ④–⑧ 在时间上解耦。业务系统在步骤 ③ 即可返回，不等待后续投递完成。即使投递过程中通知系统宕机，重启后未完成的任务自动恢复投递。
+- **投递独立**：每条投递任务独立执行。供应商 A 投递失败触发重试，不影响供应商 B 的投递。
+- **状态可追踪**：整个过程中的每个状态变更都被记录，支持按通知 ID 追溯完整生命周期。
+- **终点明确**：每条通知的终点只有三个——成功送达、进入死信等待人工处理、或被人工丢弃。
+
+---
+## 3. 请求构造
 
 ### 3.1 问题的核心
 
@@ -613,255 +592,90 @@ flowchart LR
 
 ---
 
-## 4. 供应商 API 格式差异分析
+### 3.7 请求构造的复杂度层级
 
-### 4.1 实际场景中的格式差异
+从调研来看，系统需要支持的请求构造能力可分为五个层级，分属两种策略：
 
-从调研的多个真实供应商 API 来看，差异体现在以下几个维度：
+**基础支持（必须内置）：**
 
-| 维度 | 差异范围 | 例子 |
-|------|----------|------|
-| **数据格式** | JSON / XML / SOAP-XML / Form-Encoded | JSON 是主流，金融/银行/账单系统常见 XML 和 SOAP |
-| **HTTP 方法** | GET / POST / PATCH | 广告归因常用 GET，CRM 常用 PATCH |
-| **数据位置** | Query params / JSON Body / XML Body / Header | Singular 使用 URL 宏，HubSpot 用 JSON Body，Aria 用 XML Body |
-| **字段命名** | 完全不同的事件名、字段名 | `ec_register` vs `register` vs `sign_up` |
-| **字段结构** | 平面 vs 嵌套 vs 数组 vs XML 元素 | 简单键值对 vs 层级对象 vs 数组 vs SOAP Envelope/Header/Body |
-| **动态数据** | 时间戳、签名、ID 需动态计算 | 时间戳格式、MD5 签名、HMAC 签名 |
-| **条件字段** | 某些字段在特定条件下才出现 | 错误时才带 error 字段，部分事件才带特定属性 |
-| **Content-Type** | 多种 MIME 类型 | `application/json`、`application/xml`、`text/xml`（SOAP）、`application/x-www-form-urlencoded` |
+| 层级 | 系统能力 | 典型场景 |
+|------|---------|----------|
+| **L1 — 字段替换** | 请求结构固定，系统只需从 payload 中提取字段值填入指定位置 | 广告平台回传事件：所有事件共用同一请求骨架，区别仅在于 `user_id`、`timestamp` 等字段值 |
+| **L2 — 条件字段** | 同一供应商的请求中包含哪些字段，取决于事件类型或数据值。系统需要根据条件决定字段是否出现 | 多个事件类型投递给同一个 CRM：`order.paid` 携带 `lifecyclestage: "customer"`，`user.registered` 携带 `lifecyclestage: "lead"` |
 
-> **关于 YAML**：YAML 在供应商 API 中几乎不作为请求 Body 格式使用，其主要用途是 API 规范定义（OpenAPI YAML）和内部配置文件。可暂不考虑支持 YAML 格式输出。
+**扩展支持（通过扩展点实现）：**
 
-### 4.2 渲染逻辑的复杂度谱系
+| 层级 | 系统能力 | 典型场景 |
+|------|---------|----------|
+| **L3 — 数据变换** | payload 字段不能直接映射到供应商请求，系统需要对字段进行重命名、嵌套、拆分或聚合 | 库存变更通知：payload 中的 `product_id`、`quantity`、`warehouse` 三个平铺字段需重组为 `{"items": [{"product_id": "...", "qty": 1, "location": "SH"}]}` 的嵌套结构 |
+| **L4 — 异构格式** | 供应商要求非 JSON 格式（XML/SOAP），系统需要切换序列化方式构造请求体 | 金融/账单系统通知，要求 XML 或 SOAP Envelope 格式 |
+| **L5 — 动态计算** | 请求值不能在配置时预计算，只能在实际发送时刻生成（如签名、Token 获取） | 需要 HMAC 签名或 OAuth Token 的接口 |
 
-从调研案例中，请求构造的复杂度可大致分为几个层级：
 
-| 层级 | 特征 | 典型场景 | 示例 |
-|------|------|----------|------|
-| **L1 — 固定模板** | URL 和 Body 都是固定格式，仅替换少数占位符 | 简单的广告回传 | `{ "event": "register", "user_id": "{userId}" }` |
-| **L2 — 条件构造** | 某些字段根据事件类型/数据值决定是否出现 | CRM 状态更新 | 不同类型的事件传不同的 property 集合 |
-| **L3 — 数据变换** | 需要将内部数据映射、转换、聚合为外部格式 | 库存变更通知 | 拆分 product + quantity + warehouse 为嵌套结构 |
-| **L4 — 异构格式** | 需要生成 JSON 以外的格式，如 XML、SOAP Envelope | 金融/账单通知 | 构造 `<SOAP-ENV:Envelope>` 包裹命名空间和鉴权 Header |
-| **L5 — 计算/签名** | 需要在请求中加入动态计算值（签名、Token 获取） | 需要鉴权的接口 | MD5(body+secret)、HMAC 签名、OAuth 先获取 Token |
+许多供应商要求请求携带鉴权凭证或数字签名。系统需要支持多种鉴权方式和签名算法，每种方式对应不同的请求构造处理。
 
-> **需求层面的结论**：请求构造功能应最少支持 **L1+L2**（模板 + 简单条件），并可通过扩展点支持 **L3+L4+L5**（异构格式转换、自定义变换逻辑）。具体采用什么实现方式（模板引擎 / 转换函数 / DSL）属于方案设计阶段决策。
+### 3.8 鉴权方式
 
-### 4.3 供应商响应格式与成功判定
+每个供应商决定了其 API 使用什么鉴权方式，通知系统必须适配这些差异（详见[附录 C](#附录-c--供应商调研详情)）。从调研来看，不同鉴权方式对系统的要求可分为以下三类：
 
-成功判定是投递逻辑中的关键环节：**系统不能仅靠 HTTP 状态码判断通知是否送达成功**，不同供应商的响应行为差异很大。
+**第一类：凭证即用型** — 凭证是静态值，系统只需在请求构造时将其附加到指定位置。这类鉴权对所有请求的处理方式一致，不涉及凭证获取或刷新。
+- API Key：固定字符串，放在 Header 或 Query 参数中
+- Basic Auth：用户名和密码拼接后以 Base64 编码放在 Authorization Header
+- 静态 Bearer Token：长生命周期的固定 Token，直接放入 Authorization Header
 
-#### 4.3.1 响应状态码的多样性
+**第二类：凭证需管理型** — 凭证有时效性，系统需要额外管理凭证的获取和刷新。
+- Bearer Token / JWT（动态获取）：Token 会过期，系统需要监控有效期并在到期前重新获取
+- OAuth 2.0 Client Credentials：系统需要先调用供应商的 Token 接口获取 Access Token，再用 Bearer 方式调用业务接口——涉及两步请求流程，且 Token 刷新逻辑独立于投递逻辑
 
-| 状态码 | 业务含义 | 是否重试 | 说明 |
-|--------|----------|----------|------|
-| **2xx** | 请求到达服务端 | 视 body 内容而定 | 需进一步检查 body 中的业务状态码 |
-| **400** | 请求参数错误 | ❌ 不重试 | 请求格式有问题，重试无意义 |
-| **401/403** | 鉴权失败 | ❌ 需人工介入 | Token/密钥过期或权限不足 |
-| **404** | 接口地址不存在 | ❌ 不重试 | 检查端点 URL 配置 |
-| **429** | 超过限流阈值 | ✅ 应重试 | 需遵循 `Retry-After` Header |
-| **5xx** | 服务端错误 | ✅ 应重试 | 500/502/503 等临时故障 |
+**第三类：基于签名的鉴权** — 不是附加凭证，而是对请求内容本身做签名变换。这类已由 §5.2 覆盖。
 
-#### 4.3.2 "200 但实际失败"——最常见的陷阱
+**关于动态凭证**：上述分类都假设凭证由通知系统配置，对所有投递请求使用同一凭证。通知系统不处理与具体事件关联的用户级凭证（如 OAuth 2.0 Authorization Code 获取的用户级 Token），这类凭证的归属和路由属于业务系统的职责范围。
 
-多家主流供应商存在 **HTTP 200 表示请求到达，但 body 中指明业务处理失败**的情况：
+### 3.9 签名需求
 
-| 供应商 | 现象 | 成功判定方式 |
-|--------|------|-------------|
-| **Facebook/Meta CAPI** | 返回 200，但 `events_received: 0`，`messages` 数组含错误信息 | 检查 `events_received > 0` |
-| **Google Ads API** | 返回 200，但 `partialFailureError` 描述失败原因 | 解析 `partialFailureError` 字段 |
-| **Microsoft Teams** | 限流、消息过大时返回 **200** + body 错误文本 | body 必须为 `"1"` |
-| **LeadSquared** | **永远返回 200**，错误放在 `StatusReason` 字段 | 检查 `Status` 字段 |
-| **Trade Me** | 返回 200，`success: false` 等同于 400 错误 | 检查 `success` 字段 |
-| **Bloomreach** | 单条处理失败返回 200 + 错误信息 | 检查 `errors` 数组 |
-| **Xero** | 200 OK 但 body 不可有任何内容 | body 必须为空 |
-| **Smartcar** | 200 OK，**body 被忽略** | 仅看状态码 |
+签名的作用是让供应商通过约定的算法验证请求方的身份和请求完整性。不同签名方案的核心结构相似——构造待签字符串 → 结合密钥 → 输出签名，但在**哪些部分参与签名、如何规范化等方面差异很大**（详见[附录 C](#附录-c--供应商调研详情)）。从调研来看，签名需求可归为两大类：
 
-同一个错误（如限流）在不同供应商的表达方式也不同：大部分返回 **429**，但 Microsoft Teams 返回 **200** + body 错误。
+**第一类：使用标准签名算法**
 
-#### 4.3.3 对投递逻辑的要求
+一些供应商采用业界通用的标准签名算法，如 AWS SigV4、Alibaba Cloud V3、Google Cloud V4、Azure SAS、OAuth 1.0 等。
 
-供应商响应的多样性意味着投递逻辑需要按供应商配置：
+这类算法的核心特征是：**所有签名规则由算法规范定义，不是用户可以配置的**。包括：
+- 哪些部分参与签名（HTTP 方法、URI、Query 参数、Header、Body 摘要等）
+- 各部分的排列顺序和分隔符
+- Header 筛选规则（哪些前缀的 Header 参与签名、大小写处理、排序规则）
+- Query 参数的纳签方式和排序规则
+- Host/Path 的规范化方式
+- 签名结果的携带位置（Authorization Header、自定义 Header、Query 参数内等）
+- 时间戳和 Nonce 的字段名、格式
 
-**判断成功：**
-- 部分供应商仅看 **HTTP 状态码在 2xx 范围**即可
-- 部分需要检查 **body 中特定字段的值**（如 `events_received > 0`、`success: true`、body 等于 `"1"`）
-- 部分需要检查 **body 不为空也不为错误信息**
+用户选择了一种标准算法，就相当于接受了该算法的一整套签名契约。系统只需要提供算法选择 + 密钥配置，不需要、也不应该让用户修改算法内部的规则。
 
-**判断失败与重试：**
-- 4xx 错误中仅 **429（限流）** 应重试，其余 4xx 重试无意义
-- **200 + 业务错误**是否重试取决于具体业务场景：参数错误不重试，系统繁忙可重试
-- 部分供应商在 200 body 中附带错误码，需按错误码判断是否应重试
+**第二类：自定义签名方案**
 
-**综合来看，响应成功判定本身也是一组可配置的规则**，与请求构造的映射逻辑类似，需要支持根据不同供应商定制。
+并非所有供应商都采用标准签名算法。很多供应商基于 HMAC 等基础算法自行定义了签名规则——谁参与签名、怎么规范化、结果放哪儿，都由该供应商自行约定。系统必须支持自定义签名，原因在于：
+
+- **历史原因**：大量供应商的 API 在 SigV4 等标准算法普及之前就已存在，其签名方案是当年自行设计并沿用至今的，不会为通知系统而改变
+- **部署灵活性**：部分供应商的 API 会经过特定的网关或 CDN，需要在签名中保留灵活度（如不签 Query 参数、只签 Body 摘要等），标准算法的规则是固定的，不允许这类取舍
+
+**实际考量**：选择签名方案时，需要理解它在部署层面的影响。标准算法（如 SigV4）签了整个请求的语义，确保请求完整性，但也意味着请求链路中任何中间组件都不能修改被签名覆盖的部分。自定义方案则可以根据实际部署需求在安全性和灵活性之间做取舍——例如选择不纳签 Query 参数，为网关或 CDN 层的参数添加留出空间。哪种选择更合适，取决于 API 是内网直连还是经过第三方网关、安全等级要求、以及运维团队对链路组件的控制能力。
 
 ---
 
-## 5. 供应商 API 签名机制分析
+## 4. 响应判定
 
-许多供应商要求请求携带数字签名，用于身份认证和请求完整性保护。签名机制是请求构造中最复杂的部分之一，其原因在于：**签名不是在已有请求上"加一个字段"，而是要精心构造一个可被两端一致还原的待签字符串**。
+### 4.1 响应成功判定需求
 
-### 5.1 签名算法类型
+系统**不能仅靠 HTTP 状态码判断通知是否送达成功**，不同供应商的响应行为差异很大（详细案例见[附录 C](#附录-c--供应商调研详情)）。系统需要满足：
 
-从调研来看，供应商使用的签名算法可分为三类：
-
-| 算法类型 | 算法 | 使用方 | 特征 |
-|----------|------|--------|------|
-| **HMAC（对称）** | HMAC-SHA256（主流）/ HMAC-SHA1（旧） | Sinch、HubSpot、Alibaba Cloud、Field Nation、Rewardful、Cryptopay | 共享密钥，计算简单，需安全分发密钥 |
-| **MD5 摘要** | MD5(body + secret) | 部分国内平台、Auto Integrate | 极简单，安全性较弱 |
-| **RSA（非对称）** | RSA-SHA256 / RSA2 | 微信支付 v3、支付宝 | 私钥签名、公钥验签，无需共享密钥 |
-
-HMAC 是使用最广泛的方式，以下分析主要围绕 HMAC 展开。
-
-### 5.2 签名的通用构造模式
-
-尽管各家供应商的签名细节不同，但底层逻辑高度一致：
-
-```
-待签字符串 = HTTP方法 + 分隔符 +
-            (Body摘要) + 分隔符 +
-            (Content-Type) + 分隔符 +
-            (时间戳) + 分隔符 +
-            规范化Header + 分隔符 +
-            规范化请求路径
-
-签名结果 = Base64( HMAC-SHA256( 共享密钥, 待签字符串 ) )
-```
-
-其中每个组件的选取和规范化方式，正是各家供应商差异的集中体现。
-
-### 5.3 规范化 Header
-
-规范化 Header 是指：从请求的众多 Header 中**筛选出一组约定的 Header，统一整理后参与签名计算**。目的是让签名方和验签方即使 Header 的书写方式不同（大小写、空格、顺序），也能算出一致的签名。
-
-**规范化 Header 的典型规则：**
-
-| 步骤 | 规则 | 示例 |
-|------|------|------|
-| **筛选** | 仅选约定范围内的 Header：以特定前缀开头的自定义 Header + 少数标准 Header（`host`、`content-type`） | `x-amz-*`、`x-acs-*`、`x-ms-*` |
-| **降大小写** | Header 名字转小写 | `Content-Type` → `content-type` |
-| **去空格** | 值去掉首尾空格 | `"  value  "` → `"value"` |
-| **排序** | 按名字典序升序排列 | `content-type` 在 `host` 前 |
-| **格式化** | `name:value` 每行一个，以 `\n` 连接 | `content-type:application/json\nhost:example.com\n` |
-
-**例：同一组 Header 规范化前后：**
-
-```
-原始请求 Header:
-  Host: s3.amazonaws.com
-  Content-Type: application/json
-  X-Amz-Date: 20260521T120000Z
-  X-Amz-Content-SHA256: abc123...
-
-规范化后（参与签名）:
-  content-type:application/json
-  host:s3.amazonaws.com
-  x-amz-content-sha256:abc123...
-  x-amz-date:20260521T120000Z
-```
-
-规范化 Header 通常还会附带一个 `SignedHeaders` 列表，告知服务端"我签了哪些 Header"：
-```
-SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
-```
-
-### 5.4 Query 参数的规范化处理
-
-当供应商将 Query 参数纳入签名范围时（常见于 GET 请求或带 query 的 POST），同样需要规范化：
-
-| 做法 | 说明 | 代表 |
-|------|------|------|
-| **全部规范化后参与签名** | Query 参数按键名字典序排序、URL 解码后拼入待签串 | AWS SigV4、Alibaba Cloud V3 |
-| **仅签 Path，不签 Query** | 仅对 `?` 之前的路径签名 | 部分简单 HMAC 方案 |
-
-**例：**
-```
-原始 URL: /api/notify?name=Bob&age=20&timestamp=1716259200000
-规范化后: /api/notify?age=20&name=Bob&timestamp=1716259200000  (按 key 排序)
-```
-
-### 5.5 签名结果的携带方式
-
-签名确认通过 HTTP Header 或参数携带：
-
-| 携带位置 | 方式示例 | 代表 |
-|----------|----------|------|
-| **`Authorization` Header** | `Authorization: HMAC KEY:SIG` | Sinch、Alibaba Cloud、Cryptopay |
-| **自定义 Header** | `X-HubSpot-Signature-v3: SIG` | HubSpot、Field Nation、Rewardful |
-| **请求参数内** | `sign=SIG` 放在 body 或 query 中 | 支付宝、微信支付 v2 |
-| **多个 Header 组合** | `Wechatpay-Signature` + `Wechatpay-Serial` + `Wechatpay-Timestamp` | 微信支付 v3 |
-
-### 5.6 代理网关环境下的签名处理
-
-签名方案面临的一个现实问题是：**请求在到达服务端前可能经过代理网关（Nginx、CDN、API Gateway），这些中间节点可能添加或修改 Header 和 Query 参数。签名怎么不受影响？**
-
-**核心思路：签名只覆盖调用方可控的稳定字段，明确划定信任边界。**
-
-```
-调用方控制区 ──→ 签名覆盖 ──→ 代理网关 ──→ 服务端验签
-(签 method + path + body + 指定 header + 时间戳)
-```
-
-在这个边界内：
-
-| 场景 | 为什么不影响签名 |
-|------|----------------|
-| 代理添加了 `X-Request-ID` | 它不在 `SignedHeaders` 列表中，验签时不涉及 |
-| 代理改写了 `Transfer-Encoding` | 同样不在签名范围内，不影响 |
-| 代理追加了 `?tracking_id=xyz` | Query 签名只排已定义的参数，未知的不参与 |
-| 代理重排了 Header 顺序 | 规范化规则已要求排序，顺序不影响 |
-| 代理改写了 Body | Body 摘要验证失败 → 签名不匹配 → 请求被拒（这正是签名要的效果） |
-| 代理改写了 Path | Path 参与签名 → 签名不匹配 → 请求被拒（正确行为） |
-
-边界外则需要约定统一的规范化规则来消除歧义：
-
-| 歧义场景 | 规范化规则 |
-|----------|-----------|
-| Header 大小写不同 | 统一转小写 |
-| Header 值首尾空格 | 统一 trim |
-| Header 顺序不同 | 统一按名字排序 |
-| Host 的默认端口省略 | `https://example.com:443` → `example.com` |
-| URL 路径的 URL 编码 | 统一解码或统一保留编码（按供应商要求） |
-
-**防重放保护**：仅靠签名无法防止重放攻击，通常需要结合：
-- **时间戳**：服务端校验 ±5 分钟窗口
-- **Nonce**：一次性随机数，服务端记录已用 nonce 去重
-
-### 5.7 需求层面的结论
-
-签名机制的核心复杂度在于**规范化规则**——两端必须就以下内容达成一致：
-- 哪些 Header 参与签名
-- 如何规范化（大小写、排序、空格、编码）
-- 是否包含 Query 参数、如何规范化
-- Host/Path 如何处理
-
-这对通知系统而言意味着：**签名生成不是一个简单的"签名函数"，而是一整套与目标供应商协商确定的规范化规则集合**。当对接新的供应商时，需要评估其签名规则是否在当前系统的支持范围内（对应 4.2 节的 L5 复杂度层级）。
+- **按供应商配置成功判定规则**：部分供应商仅看 2xx 状态码即可；部分需要检查 body 中特定字段的值（如 `events_received > 0`、`success: true`）；部分需要检查 body 不为空也不为错误信息
+- **按供应商配置失败与重试判定**：4xx 错误中仅 429（限流）应重试，其余 4xx 重试无意义；200 + 业务错误是否重试取决于具体场景（参数错误不重试，系统繁忙可重试）；部分供应商在 200 body 中附带错误码，需按错误码判断是否应重试
+- **规则可配置**：成功判定逻辑本身也是一组可配置的规则，与请求构造的映射逻辑类似，需要支持根据不同供应商定制
 
 ---
 
-## 6. 供应商鉴权方式
+## 5. 变化点分析
 
-从实际调研来看，外部供应商 API 常见的鉴权方式包括：
-
-| 鉴权方式 | 说明 | 常见场景 |
-|----------|------|----------|
-| **API Key（Header/Query）** | 固定字符串，放在 Header 或 Query 参数中 | 广告回传、简单 Webhook |
-| **Bearer Token / JWT** | Authorization: Bearer \<token\>，Token 可能有时效性 | CRM 系统、SaaS API |
-| **Basic Auth** | Authorization: Basic Base64(user:pass) | 遗留系统、内部工具 |
-| **HMAC 签名** | 使用共享密钥对请求内容签名，验证完整性 | 支付回调、库存通知 |
-| **OAuth 2.0 Client Credentials** | 先调用 Token 接口获取 Token，再用 Bearer 方式调用业务接口 | 企业级 SaaS（HubSpot、Zoho 等） |
-| **自定义签名算法** | 供应商自定义的签名逻辑（如 MD5(body+secret)） | 国内平台、定制化接口 |
-
-**关于用户绑定的鉴权**：部分场景中，供应商 API 使用**业务终端用户的身份**发起请求。例如：
-- 广告平台回传中携带用户设备标识（IDFA / OAID），将事件绑定到用户级别的归因
-- 部分 SaaS 平台通过 OAuth 2.0 Authorization Code 流程，获取用户的授权 Token，后续 API 调用使用该用户级别的 Token
-
-这意味系统的鉴权处理可能需要支持**动态凭证**——凭证不是系统静态配置的，而是业务系统提交通知时传入的，或通过某种机制关联到具体用户的。
-
----
-
-## 7. 变化点分析
-
-### 7.1 不易变的部分 (Stable)
+### 5.1 不易变的部分 (Stable)
 
 | 层次 | 内容 | 稳定原因 |
 |------|------|----------|
@@ -872,7 +686,7 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 | **状态机** | PENDING → DELIVERING → SUCCEEDED / DEAD_LETTER 的主体状态流转 | 生命周期不会变 |
 | **可观测需求** | 对通知状态必须有可见性 | 运维的底线要求 |
 
-### 7.2 容易变的部分 (Volatile)
+### 5.2 容易变的部分 (Volatile)
 
 | 层次 | 内容 | 变化驱动因素 |
 |------|------|--------------|
@@ -887,18 +701,18 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 
 ---
 
-## 8. 非功能性需求
+## 6. 非功能性需求
 
-### 8.1 可靠性与送达保证
+### 6.1 可靠性与送达保证
 
 | 需求 | 说明 |
 |------|------|
 | **至少一次投递** | 正常情况下，每条通知至少被投递一次 |
-| **持久化保证** | 通知存储到持久化介质后再返回给业务系统，服务重启不丢数据 |
+| **不丢失保证** | 通知被可靠记录后再返回给业务系统，服务重启不丢失数据 |
 | **最终送达保证** | 临时失败自动重试，最终失败进死信，留有恢复手段 |
 | **幂等处理** | 对同一通知的重复提交不应产生重复投递（需要业务系统提供幂等键） |
 
-### 8.2 故障隔离与稳定
+### 6.2 故障隔离与稳定
 
 | 需求 | 说明 |
 |------|------|
@@ -908,7 +722,7 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 | **自愈** | 宕机重启后，未完成的通知自动恢复投递 |
 | **消息堆积保护** | 避免因某一供应商投递阻塞导致整个系统消息堆积失控 |
 
-### 8.3 性能
+### 6.3 性能
 
 | 需求 | 说明 |
 |------|------|
@@ -916,7 +730,7 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 | **投递延迟** | 从业务系统提交到首次投递发起的时间（不包括重试等待）应在秒级 |
 | **突发处理** | 当业务系统突发大量提交时，系统应能通过队列缓冲吸收峰值，不丢失消息 |
 
-### 8.4 调用方管理与供应商 Quota 管理
+### 6.4 调用方管理与供应商 Quota 管理
 
 **调用方管理：**
 | 需求 | 说明 |
@@ -933,7 +747,7 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 | **配额超限处理** | 达到配额上限时，系统需要支持以下至少一种处理策略：排队等待配额刷新、通知相关方人工处理、或降级丢弃 |
 | **配额监控** | 实时监控各供应商的配额使用情况，接近上限时告警 |
 
-### 8.5 可观测性
+### 6.5 可观测性
 
 **MVP 目标**：结构化日志 + 关键指标打点为保底方案。在公司基础设施完备时可同时提供 Prometheus 指标端点和基础 Dashboard。核心目的是让业务方能"看到效果"——通知发出后的状态和成功率可见。
 
@@ -947,7 +761,7 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 | **故障指标** | 各供应商的故障状态、投递错误码分布 | **保底（日志可查）** |
 | **告警** | 死信堆积超过阈值、供应商持续失败、配额接近上限、单个调用方失败率异常升高时触发告警 | 后续 |
 
-### 8.6 安全性
+### 6.6 安全性
 
 | 需求 | 说明 |
 |------|------|
@@ -955,7 +769,7 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 | **凭证安全** | 供应商的鉴权凭证加密存储，不随代码版本管理 |
 | **审计日志** | 死信操作（重试/丢弃）、供应商配置修改、调用方权限变更等记录操作人、时间、变更内容 |
 
-### 8.7 可维护性
+### 6.7 可维护性
 
 | 需求 | 说明 |
 |------|------|
@@ -963,14 +777,14 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 | **配置变更** | 供应商配置变更应支持运行时生效，无需重启服务 |
 | **向后兼容** | 配置格式变更时，现有配置可平滑迁移，不影响运行中的投递 |
 
-### 8.8 可测试性
+### 6.8 可测试性
 
 | 需求 | 说明 |
 |------|------|
 | **供应商模拟** | 提供模拟外部 API 的能力，便于集成测试 |
 | **故障注入** | 支持模拟超时、特定错误码、网络故障，验证重试和熔断逻辑 |
 
-### 8.9 数据归档
+### 6.9 数据归档
 
 | 需求 | 说明 |
 |------|------|
@@ -979,7 +793,7 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 
 ---
 
-## 9. MVP 范围
+## 7. MVP 范围
 
 > 以下按需求域列出系统能力及其 MVP 归属。判断标准：
 > 
@@ -1094,3 +908,302 @@ SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
 | **纵向隔离** | 业务方不碰供应商配置和映射规则；供应商维护者引用但不修改 Schema |
 | **变更审批** | 配置变更不直接生效，需经审查（方式由实现决定） |
 | **可追溯** | 所有变更记录可查阅、可回滚
+
+---
+
+## 附录 C — 供应商调研详情
+
+### C.1 请求格式与响应判定
+
+#### C.1.1 请求格式的差异维度
+
+| 维度 | 差异范围 | 例子 |
+|------|----------|------|
+| **数据格式** | JSON / XML / SOAP-XML / Form-Encoded | JSON 是主流，金融/银行/账单系统常见 XML 和 SOAP |
+| **HTTP 方法** | GET / POST / PATCH | 广告归因常用 GET，CRM 常用 PATCH |
+| **数据位置** | Query params / JSON Body / XML Body / Header | Singular 使用 URL 宏，HubSpot 用 JSON Body，Aria 用 XML Body |
+| **字段命名** | 完全不同的事件名、字段名 | `ec_register` vs `register` vs `sign_up` |
+| **字段结构** | 平面 vs 嵌套 vs 数组 vs XML 元素 | 简单键值对 vs 层级对象 vs 数组 vs SOAP Envelope/Header/Body |
+| **动态数据** | 时间戳、签名、ID 需动态计算 | 时间戳格式、MD5 签名、HMAC 签名 |
+| **条件字段** | 某些字段在特定条件下才出现 | 错误时才带 error 字段，部分事件才带特定属性 |
+| **Content-Type** | 多种 MIME 类型 | `application/json`、`application/xml`、`text/xml`（SOAP）、`application/x-www-form-urlencoded` |
+
+> **关于 YAML**：YAML 在供应商 API 中几乎不作为请求 Body 格式使用，其主要用途是 API 规范定义（OpenAPI YAML）和内部配置文件。可暂不考虑支持 YAML 格式输出。
+
+#### C.1.2 供应商 API 示例
+
+以下五个示例来自实际调研，分别对应 §4.2 定义的 L1-L5 复杂度层级。
+
+**L1 示例 — 广告平台回传用户注册（固定模板）**
+
+```
+POST https://adplatform.com/tracking
+Content-Type: application/json
+X-API-Key: abc123
+
+{
+  "event": "register",
+  "user_id": "u_12345",
+  "timestamp": 1716259200000,
+  "click_id": "click_67890"
+}
+```
+
+**L2 示例 — CRM 系统更新联系人状态（条件构造）**
+
+```
+PATCH https://crm.company.com/api/v3/contacts/789
+Authorization: Bearer eyJhbGci...
+Content-Type: application/json
+
+{
+  "properties": {
+    "lifecyclestage": "customer",
+    "last_paid_date": "2026-05-20"
+  }
+}
+```
+
+**L3 示例 — 库存系统变更通知（数据变换）**
+
+```
+POST https://inventory.fulu.com/api/stock/change
+Content-Type: application/json
+Sign: MD5(body+secret)
+
+{
+  "product_id": 10000570,
+  "changed_type": 2,
+  "quantity": -1,
+  "product_sale_status": "上架"
+}
+```
+
+**L4 示例 — 金融/账单系统通知（XML 格式）**
+
+```
+POST https://billing.ariasys.com/events
+Content-Type: application/xml
+Authorization: Bearer eyJhbGci...
+
+<?xml version="1.0" encoding="UTF-8"?>
+<apf2doc>
+    <request>
+        <action>A</action>
+        <class>N</class>
+        <auth_key>abc123</auth_key>
+    </request>
+    <account>
+        <acct_no>789012</acct_no>
+        <userid>jane.smith</userid>
+    </account>
+    <event_data>
+        <event>
+            <event_id>4001</event_id>
+            <event_label>Account Created</event_label>
+        </event>
+    </event_data>
+</apf2doc>
+```
+
+**L5 示例 — 银行 SOAP/XML 通知（计算/签名）**
+
+```
+POST https://jackhenry.com/jxchange/NotSndAdd
+Content-Type: text/xml; charset=utf-8
+SOAPAction: http://jackhenry.com/ws/NotSndAdd
+
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+  <SOAP-ENV:Header/>
+  <SOAP-ENV:Body>
+    <NotSndAdd xmlns="http://jackhenry.com/jxchange/TPG/2008">
+      <MsgRqHdr>
+        <jXchangeHdr>
+          <AuditUsrId>sysadmin</AuditUsrId>
+          <InstRtId>003003003</InstRtId>
+          <InstEnv>PROD</InstEnv>
+        </jXchangeHdr>
+      </MsgRqHdr>
+      <AlrtName>AccountAlert_v1</AlrtName>
+      <AlrtSndInfoRec>
+        <SndAlrtArray>
+          <SndAlrtRec>
+            <ConsmRecipId>user001</ConsmRecipId>
+          </SndAlrtRec>
+        </SndAlrtArray>
+      </AlrtSndInfoRec>
+    </NotSndAdd>
+  </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>
+```
+
+#### C.1.3 响应状态码
+
+| 状态码 | 业务含义 | 是否重试 | 说明 |
+|--------|----------|----------|------|
+| **2xx** | 请求到达服务端 | 视 body 内容而定 | 需进一步检查 body 中的业务状态码 |
+| **400** | 请求参数错误 | ❌ 不重试 | 请求格式有问题，重试无意义 |
+| **401/403** | 鉴权失败 | ❌ 需人工介入 | Token/密钥过期或权限不足 |
+| **404** | 接口地址不存在 | ❌ 不重试 | 检查端点 URL 配置 |
+| **429** | 超过限流阈值 | ✅ 应重试 | 需遵循 `Retry-After` Header |
+| **5xx** | 服务端错误 | ✅ 应重试 | 500/502/503 等临时故障 |
+
+#### C.1.4 "200 但实际失败"——各供应商案例
+
+多家主流供应商存在 **HTTP 200 表示请求到达，但 body 中指明业务处理失败**的情况：
+
+| 供应商 | 现象 | 成功判定方式 |
+|--------|------|-------------|
+| **Facebook/Meta CAPI** | 返回 200，但 `events_received: 0`，`messages` 数组含错误信息 | 检查 `events_received > 0` |
+| **Google Ads API** | 返回 200，但 `partialFailureError` 描述失败原因 | 解析 `partialFailureError` 字段 |
+| **Microsoft Teams** | 限流、消息过大时返回 **200** + body 错误文本 | body 必须为 `"1"` |
+| **LeadSquared** | **永远返回 200**，错误放在 `StatusReason` 字段 | 检查 `Status` 字段 |
+| **Trade Me** | 返回 200，`success: false` 等同于 400 错误 | 检查 `success` 字段 |
+| **Bloomreach** | 单条处理失败返回 200 + 错误信息 | 检查 `errors` 数组 |
+| **Xero** | 200 OK 但 body 不可有任何内容 | body 必须为空 |
+| **Smartcar** | 200 OK，**body 被忽略** | 仅看状态码 |
+
+同一个错误（如限流）在不同供应商的表达方式也不同：大部分返回 **429**，但 Microsoft Teams 返回 **200** + body 错误。
+
+### C.2 签名机制
+
+#### C.2.1 签名算法类型
+
+| 算法类型 | 算法 | 使用方 | 特征 |
+|----------|------|--------|------|
+| **HMAC（对称）** | HMAC-SHA256（主流）/ HMAC-SHA1（旧） | Sinch、HubSpot、Alibaba Cloud、Field Nation、Rewardful、Cryptopay | 共享密钥，计算简单，需安全分发密钥 |
+| **MD5 摘要** | MD5(body + secret) | 部分国内平台、Auto Integrate | 极简单，安全性较弱 |
+| **RSA（非对称）** | RSA-SHA256 / RSA2 | 微信支付 v3、支付宝 | 私钥签名、公钥验签，无需共享密钥 |
+
+HMAC 是使用最广泛的方式，以下分析主要围绕 HMAC 展开。
+
+#### C.2.2 签名的通用构造模式
+
+尽管各家供应商的签名细节不同，但底层逻辑高度一致：
+
+```
+待签字符串 = HTTP方法 + 分隔符 +
+            (Body摘要) + 分隔符 +
+            (Content-Type) + 分隔符 +
+            (时间戳) + 分隔符 +
+            规范化Header + 分隔符 +
+            规范化请求路径
+
+签名结果 = Base64( HMAC-SHA256( 共享密钥, 待签字符串 ) )
+```
+
+其中每个组件的选取和规范化方式，正是各家供应商差异的集中体现。
+
+#### C.2.3 规范化 Header
+
+规范化 Header 是指：从请求的众多 Header 中**筛选出一组约定的 Header，统一整理后参与签名计算**。目的是让签名方和验签方即使 Header 的书写方式不同（大小写、空格、顺序），也能算出一致的签名。
+
+**规范化 Header 的典型规则：**
+
+| 步骤 | 规则 | 示例 |
+|------|------|------|
+| **筛选** | 仅选约定范围内的 Header：以特定前缀开头的自定义 Header + 少数标准 Header（`host`、`content-type`） | `x-amz-*`、`x-acs-*`、`x-ms-*` |
+| **降大小写** | Header 名字转小写 | `Content-Type` → `content-type` |
+| **去空格** | 值去掉首尾空格 | `"  value  "` → `"value"` |
+| **排序** | 按名字典序升序排列 | `content-type` 在 `host` 前 |
+| **格式化** | `name:value` 每行一个，以 `\n` 连接 | `content-type:application/json\nhost:example.com\n` |
+
+**例：同一组 Header 规范化前后：**
+
+```
+原始请求 Header:
+  Host: s3.amazonaws.com
+  Content-Type: application/json
+  X-Amz-Date: 20260521T120000Z
+  X-Amz-Content-SHA256: abc123...
+
+规范化后（参与签名）:
+  content-type:application/json
+  host:s3.amazonaws.com
+  x-amz-content-sha256:abc123...
+  x-amz-date:20260521T120000Z
+```
+
+规范化 Header 通常还会附带一个 `SignedHeaders` 列表，告知服务端"我签了哪些 Header"：
+```
+SignedHeaders: content-type;host;x-amz-content-sha256;x-amz-date
+```
+
+#### C.2.4 Query 参数的规范化处理
+
+当供应商将 Query 参数纳入签名范围时（常见于 GET 请求或带 query 的 POST），同样需要规范化：
+
+| 做法 | 说明 | 代表 |
+|------|------|------|
+| **全部规范化后参与签名** | Query 参数按键名字典序排序、URL 解码后拼入待签串 | AWS SigV4、Alibaba Cloud V3 |
+| **仅签 Path，不签 Query** | 仅对 `?` 之前的路径签名 | 部分简单 HMAC 方案 |
+
+**例：**
+```
+原始 URL: /api/notify?name=Bob&age=20&timestamp=1716259200000
+规范化后: /api/notify?age=20&name=Bob&timestamp=1716259200000  (按 key 排序)
+```
+
+#### C.2.5 签名结果的携带方式
+
+签名确认通过 HTTP Header 或参数携带：
+
+| 携带位置 | 方式示例 | 代表 |
+|----------|----------|------|
+| **`Authorization` Header** | `Authorization: HMAC KEY:SIG` | Sinch、Alibaba Cloud、Cryptopay |
+| **自定义 Header** | `X-HubSpot-Signature-v3: SIG` | HubSpot、Field Nation、Rewardful |
+| **请求参数内** | `sign=SIG` 放在 body 或 query 中 | 支付宝、微信支付 v2 |
+| **多个 Header 组合** | `Wechatpay-Signature` + `Wechatpay-Serial` + `Wechatpay-Timestamp` | 微信支付 v3 |
+
+#### C.2.6 代理网关环境下的签名处理
+
+签名方案面临的一个现实问题是：**请求在到达服务端前可能经过代理网关（Nginx、CDN、API Gateway），这些中间节点可能添加或修改 Header 和 Query 参数。签名怎么不受影响？**
+
+**核心思路：签名只覆盖调用方可控的稳定字段，明确划定信任边界。**
+
+```
+调用方控制区 ──→ 签名覆盖 ──→ 代理网关 ──→ 服务端验签
+(签 method + path + body + 指定 header + 时间戳)
+```
+
+**签名是否纳 Query 参数是一个关键的设计决策：**
+- 如果签名纳入了 Query 参数（如 SigV4），代理网关再添加任何 Query 参数都会导致签名验证失败，请求被拒——这正是签名的防篡改目的，但也意味着部署时必须确保中间组件不修改签名覆盖的内容
+- 如果签名未纳入 Query 参数，代理网关可以自由添加 Query 参数（如 `?tracking_id=xyz`），但 Query 参数存在被篡改的风险
+
+在这个边界内：
+
+| 场景 | 为什么不影响签名 |
+|------|----------------|
+| 代理添加了 `X-Request-ID` | 它不在 `SignedHeaders` 列表中，验签时不涉及 |
+| 代理改写了 `Transfer-Encoding` | 同样不在签名范围内，不影响 |
+| 代理追加了 `?tracking_id=xyz` | **取决于签名算法**：若签名纳入了全部 Query（如 SigV4），则验证失败；若签名只覆盖已定义的参数且服务端忽略未知参数，则不受影响 |
+| 代理重排了 Header 顺序 | 规范化规则已要求排序，顺序不影响 |
+| 代理改写了 Body | Body 摘要验证失败 → 签名不匹配 → 请求被拒（这正是签名要的效果） |
+| 代理改写了 Path | Path 参与签名 → 签名不匹配 → 请求被拒（正确行为） |
+
+边界外则需要约定统一的规范化规则来消除歧义：
+
+| 歧义场景 | 规范化规则 |
+|----------|-----------|
+| Header 大小写不同 | 统一转小写 |
+| Header 值首尾空格 | 统一 trim |
+| Header 顺序不同 | 统一按名字排序 |
+| Host 的默认端口省略 | `https://example.com:443` → `example.com` |
+| URL 路径的 URL 编码 | 统一解码或统一保留编码（按供应商要求） |
+
+**防重放保护**：仅靠签名无法防止重放攻击，通常需要结合：
+- **时间戳**：服务端校验 ±5 分钟窗口
+- **Nonce**：一次性随机数，服务端记录已用 nonce 去重
+
+### C.3 鉴权方式
+
+#### C.3.1 常见鉴权方式
+
+| 鉴权方式 | 说明 | 常见场景 |
+|----------|------|----------|
+| **API Key（Header/Query）** | 固定字符串，放在 Header 或 Query 参数中 | 广告回传、简单 Webhook |
+| **Bearer Token / JWT** | Authorization: Bearer \<token\>，Token 可能有时效性 | CRM 系统、SaaS API |
+| **Basic Auth** | Authorization: Basic Base64(user:pass) | 遗留系统、内部工具 |
+| **HMAC 签名** | 使用共享密钥对请求内容签名，验证完整性 | 支付回调、库存通知 |
+| **OAuth 2.0 Client Credentials** | 先调用 Token 接口获取 Token，再用 Bearer 方式调用业务接口 | 企业级 SaaS（HubSpot、Zoho 等） |
+| **自定义签名算法** | 供应商自定义的签名逻辑（如 MD5(body+secret)） | 国内平台、定制化接口 |
