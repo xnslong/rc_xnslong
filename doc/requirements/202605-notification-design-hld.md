@@ -1546,7 +1546,7 @@ flowchart LR
 | **投递指标** | 投递总数/成功/失败、队列深度、死信积压等关键指标统计打点 | §3.2 模块职责总览 |
 | **通知状态查询** | 按时间/供应商/事件类型/状态筛选，查 DB 或 API 均可 | §3.2 模块职责总览 |
 | **告警** | 不在 MVP 范围内，后续通过 Prometheus + Alertmanager 实现 | — |
-| **数仓/BI** | 不在 MVP 范围内。当前 DB 数据结构化存储通知、投递任务、投递尝试记录，后续可通过 CDC（如 Debezium）或定时批量导出机制将数据同步至 Hive 等数仓平台，支撑审计和 BI 仪表盘 | §7.9 数据导出 |
+| **数仓/BI** | 不在 MVP 范围内。后续通过 §7.9 数据导出机制将三路数据（Notification / DeliveryTask / DeliveryAttempt）同步至数仓，支撑审计和 BI 仪表盘 | §7.9 数据导出 |
 
 ### 7.6 安全性
 
@@ -1732,7 +1732,15 @@ test/
 
 | 需求 | 设计响应 | 对应章节 |
 |------|---------|---------|
-| **数据导出** | 通知和投递任务的数据模型已提供结构化状态数据，DeliveryAttempt 记录每次投递的完整请求与响应。MVP 不实现导出功能，但该数据模型已为后续导出接口（如按时间/状态/供应商查询并导出的 API）预留了扩展基础 | §4.1.2 DeliveryAttempt 审计替代方案 |
+| **数据导出** | MVP 不实现导出功能。未来导出以三路独立数据供给下游数仓：**Notification**（通知原始记录）、**DeliveryTask**（投递任务拆解）、**DeliveryAttempt**（投递尝试详情）。每条数据的触发时机为对应实体到达终态时（如 SUCCEEDED / FAILED / IGNORED / PARTIAL_FAILED）。下游数仓可通过三表自由关联分析，覆盖无路由匹配、投递被忽略等无声失败场景 | §4.1.1 核心实体、§4.1.2 DeliveryAttempt |
+
+**导出三表的设计：**
+
+| 数据表 | 触发时机 | 包含内容 | 覆盖场景 |
+|--------|---------|---------|---------|
+| **Notification** | 通知到达终态（SUCCEEDED / FAILED / PARTIAL_FAILED） | 提交原始信息：通知 ID、调用方、事件类型、payload、终态、终态时间 | 无路由匹配的通知（有 Notification 无 DeliveryTask 可被下游识别） |
+| **DeliveryTask** | 投递任务到达终态（SUCCEEDED / FAILED / IGNORED） | 任务 ID、通知 ID、供应商、终态、重试次数、终态时间 | 投递被忽略（IGNORED）的无声场景可被下游识别 |
+| **DeliveryAttempt** | 每次 HTTP 请求完成后立即产出 | 尝试 ID、任务 ID、请求/响应详情、错误码、耗时 | 投递失败原因的具体分析 |
 
 ---
 
