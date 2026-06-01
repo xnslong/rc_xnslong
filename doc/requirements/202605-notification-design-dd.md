@@ -1,10 +1,10 @@
 # API 通知系统 — 详细设计 (Detailed Design)
 
-> 版本: v0.1  
-> 日期: 2026-05-24  
+> 版本: v0.2  
+> 日期: 2026-06-01  
 > 状态: 草案  
 > 基于 HLD: v0.2  
-> 前置阅读: [需求文档 v0.2](202605-notification.md)、[HLD v0.2](202605-notification-design-hld.md)
+> 前置阅读: [需求文档 v0.3](202605-notification.md)、[HLD v0.2](202605-notification-design-hld.md)
 
 ---
 
@@ -99,7 +99,7 @@
 
 | 文档 | 版本 | 说明 |
 |------|------|------|
-| [需求分析](202605-notification.md) | v0.2 | 用例定义、变化点分析、非功能性需求 |
+| [需求分析](202605-notification.md) | v0.3 | 用例定义、变化点分析、非功能性需求 |
 | [概要设计](202605-notification-design-hld.md) | v0.2 | 架构决策、方案组合、核心组件定义 |
 
 <a id="14-mvp-范围界定"></a>
@@ -168,11 +168,13 @@ DeliveryTask 代表面向单个供应商的一次完整投递生命周期：
 stateDiagram-v2
     [*] --> PENDING: 路由完成创建
     PENDING --> DELIVERING: Worker 消费
+    PENDING --> IGNORED: 路由分发判定无需投递
     DELIVERING --> SUCCEEDED: 投递成功
     DELIVERING --> FAILED: 投递失败(可重试)
     FAILED --> DELIVERING: 重试消费
     FAILED --> DEAD_LETTER: 超过max_attempts
     SUCCEEDED --> [*]
+    IGNORED --> [*]
     DEAD_LETTER --> [*]
 ```
 
@@ -181,6 +183,7 @@ stateDiagram-v2
 | 当前状态 | 目标状态 | 触发条件 |
 |----------|---------|----------|
 | PENDING | DELIVERING | Worker 从 MQ 消费到该 task 的消息，开始处理 |
+| PENDING | IGNORED | 路由分发器判定：供应商已停用或无需投递（如重试窗口已过期） |
 | DELIVERING | SUCCEEDED | 响应判定为成功 |
 | DELIVERING | FAILED | 响应判定为失败，且 retry_count < max_attempts - 1 |
 | FAILED | DELIVERING | 重试消息到达，Worker 再次消费 |
@@ -264,7 +267,7 @@ CREATE TABLE delivery_tasks (
     updated_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
 
     CONSTRAINT chk_delivery_tasks_status CHECK (status IN (
-        'PENDING', 'DELIVERING', 'SUCCEEDED', 'FAILED', 'DEAD_LETTER'
+        'PENDING', 'DELIVERING', 'SUCCEEDED', 'FAILED', 'IGNORED', 'DEAD_LETTER'
     )),
     CONSTRAINT fk_delivery_tasks_notification FOREIGN KEY (notification_id)
         REFERENCES notifications (id)
@@ -2046,9 +2049,18 @@ sequenceDiagram
 <a id="102-e2e-验收测试"></a>
 ### 10.2 E2E 验收测试
 
-**测试对象**：完整系统（HTTP → IngestionService → DB → MQ → Router → MQ → Worker → Vendor 外部调用）。
+**测试对象**：完整系统黑盒。以编译产物的二进制文件启动一个真实的通知系统实例（使用真实的 PostgreSQL 和 RabbitMQ）。测试脚本将通知系统视为黑盒，不直接访问其内部组件（DB、MQ），只通过与真实业务系统一致的 HTTP 接口交互。最终验证通知系统发往 Mock Vendor 的 HTTP 请求是否符合预期。
 
-**启动方式**：通过 testcontainers 启动 PostgreSQL 和 RabbitMQ 真实实例，在进程中拉起完整 HTTP 服务，通过真实 HTTP 客户端发送请求，断言最终结果（DB 记录状态、Vendor 是否收到调用）。
+**启动方式**：
+1. 编译二进制产物
+2. 通过 testcontainers 或外部服务启动 PostgreSQL 和 RabbitMQ
+3. 以二进制文件启动通知系统实例
+4. 测试脚本通过 HTTP 提交通知
+5. 系统异步投递完成后，测试脚本查询 Mock Vendor 的请求记录进行断言
+
+**Mock Vendor**：一个轻量级 HTTP Server，作为测试环境中的"虚拟供应商 API"。提供响应预配置、请求记录、延迟注入、错误注入等能力（详见 HLD §7.8.2）。
+
+**测试 ID 串联**：每轮测试生成唯一 test_case_id，作为 payload 字段提交通知，经映射规则拼入发往供应商的请求 Header（X-Test-Id）。Mock Vendor 据此识别用例、记录请求、模拟响应。测试脚本通过 test_case_id 查询请求记录并断言。
 
 **目的**：定义功能的合格线。每条 E2E 测试通过，代表一个场景在完整链路上可用。它是开发流程的锁定信号——在外循环看到它变绿之前，功能不算完成。
 
@@ -2104,7 +2116,7 @@ sequenceDiagram
 
 **测试对象**：SIGTERM 信号处理 + Worker 完成当前任务后才退出的机制。
 
-**启动方式**：同 E2E（启动完整真实系统），在 Worker 处理中途发送 SIGTERM，观察是否在完成当前请求后退出，且 MQ 消息不丢失。
+**启动方式**：同 E2E 验收测试（编译二进制 → 启动完整真实系统），在 Worker 处理中途发送 SIGTERM，观察是否在完成当前请求后退出，且 MQ 消息不丢失。
 
 **目的**：验证系统生命周期事件的正确处理。这是一个特殊的 E2E 场景——共享相同的基础设施，但测试的是"终结阶段"的行为而非"运行阶段"的行为。
 
@@ -2144,7 +2156,7 @@ graph TD
 | 算法测试 | git push | 每次提交 | < 1s |
 | 编排测试 | git push | 每次提交 | < 5s |
 | 契约测试 | git push | 每次提交 | 10~30s |
-| E2E 验收测试 | PR 合并前 / nightly | 按需 | 10~60s |
+| E2E 验收测试 | PR 合并前 / nightly | 按需 | 30~120s |
 | 优雅关闭验证 | nightly | 每日 | 10~60s |
 
 算法测试和编排测试作为 PR 门禁，契约测试并行执行，E2E 和优雅关闭验证作为 pre-merge 或 nightly 的独立 stage。
