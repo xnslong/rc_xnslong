@@ -1016,6 +1016,8 @@ items:
 ```
 输出（唯一确定）：`items = [{product_id: "p1", quantity: 3, location: "SH"}, ...]`
 
+`$each` 会遍历 `$source` 指定的数组，对每个元素执行块内的映射规则。`item` 是当前元素的引用名——`@{item.product_id}` 表示"取当前元素的 product_id 字段"。
+
 **方案二：路径通配符（`[*]`）❌ 未采用**
 ```yaml
 items[].product_id: "@{payload.product_list[*].product_id}"
