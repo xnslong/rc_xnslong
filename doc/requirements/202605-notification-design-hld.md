@@ -999,7 +999,37 @@ count:
 
 无 `$type` 时保持 payload 原始类型。非法转换（如 `"abc"` → integer）返回错误，拒绝构造请求。
 
-> 引擎关键字以 `$` 前缀标识。不加 `$` 前缀的 key 即为输出字段名，即使叫 `source`、`format`、`type` 也不产生冲突。`$input` 通常从 Schema 的 `x-format` 自动推导，仅当需要覆盖 Schema 声明时手写。若输出字段名恰好以 `$` 开头（如 `$source`），用 `$$` 前缀表示字面量：`$$source` → 输出字段 `$source`。引擎关键字包括：`$source`（取值来源）、`$format`（格式转换）、`$type`（类型转换）。
+> 引擎关键字以 `$` 前缀标识。不加 `$` 前缀的 key 即为输出字段名，即使叫 `source`、`format`、`type` 也不产生冲突。`$input` 通常从 Schema 的 `x-format` 自动推导，仅当需要覆盖 Schema 声明时手写。若输出字段名恰好以 `$` 开头（如 `$source`），用 `$$` 前缀表示字面量：`$$source` → 输出字段 `$source`。引擎关键字包括：`$source`（取值来源）、`$format`（格式转换）、`$type`（类型转换）、`$iterate_elem`（数组元素遍历）。其中前三个作用于单值字段，`$iterate_elem` 作用于数组级字段。
+
+**数组遍历**：当源数据为数组，目标也需要以数组组织时，通过 `$source` 指定源数组，`$iterate_elem` 定义每个元素的映射规则。`elem` 表示源数组中的当前元素，其字段通过 `@{elem.field}` 引用：
+
+```yaml
+items:
+  $source: "@{payload.product_list}"      # 源数组
+  $iterate_elem:                          # 遍历每个元素的映射规则
+    product_id: "@{elem.product_id}"      # elem.product_id → items[].product_id
+    quantity: "@{elem.qty}"               # elem.qty → items[].quantity
+    location: "@{elem.warehouse}"         # elem.warehouse → items[].location
+```
+
+输出示例（payload.product_list = [{product_id: "p1", qty: 3, warehouse: "SH"}, ...]）：
+
+```json
+"items": [
+  {"product_id": "p1", "quantity": 3, "location": "SH"}
+]
+```
+
+`$iterate_elem` 内的映射规则与结构化映射语法完全一致，支持 `@{elem.field}` 引用、静态值、`$format`/`$type` 引擎关键字：
+
+```yaml
+items:
+  $source: "@{payload.order_list}"
+  $iterate_elem:
+    order_sn: "@{elem.order_id}"
+    total:
+      $source: "@{elem.amount}"
+      $type: integer
 
 **配置结构**：一个供应商可能接收多种事件类型，不同事件的接口和字段映射不同。配置按共享和事件专属分层：
 
