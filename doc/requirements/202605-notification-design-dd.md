@@ -693,27 +693,27 @@ POST   /api/v1/admin/config/reload                   # 手动触发配置重载
 ## 4. 配置详细设计
 
 **MVP 方案**：本地文件。配置文件存放在 `config/` 目录下，系统启动时从本地磁盘加载。
-**未来扩展**：HLD §4.4 定义的 Git + Webhook + SecretStore 方案，在第二阶段引入。
+
+**未来扩展**：第二阶段演进为 HLD §4.4 定义的 Git + Webhook + SecretStore 方案，目录结构保持不变。
 
 <a id="41-配置仓库目录结构"></a>
 ### 4.1 配置目录结构（MVP）
 
 ```
-config/                                   # 配置文件目录
-├── vendors/                              # 供应商接入配置
-│   ├── crm_system.yaml
-│   ├── ad_platform.yaml
-│   └── stock_system.yaml
-├── mappings/                             # 数据映射规则（按供应商目录组织）
-│   ├── crm_system/
-│   │   ├── order.paid.yaml
-│   │   └── order.refund.yaml
-│   └── ad_platform/
-│       └── user.registered.yaml
-└── routing_rules.yaml                    # 路由规则
+config/                                   # 配置文件根目录
+├── events/                               # 事件 Schema 定义（按业务方组织）
+│   └── {biz}/
+│       ├── route.yaml                    #   路由授权声明（事件→供应商）
+│       └── events/
+│           └── {biz_event}.yaml          #     Schema 定义
+└── vendors/                              # 供应商接入配置（按供应商组织）
+    └── {vendor}/
+        ├── vendor.yaml                   #   供应商接入信息（URL、鉴权、签名等）
+        └── {biz}/
+            └── {biz_event}.yaml          #    投递契约（API 端点 + 映射规则 + 响应判定 + 重试策略）
 ```
 
-**未来扩展**（第二阶段）：引入 Git 配置仓库，目录增加 `event_schemas/` 目录，并通过 Webhook + SecretStore 实现运行时刷新。
+> MVP 阶段事件 Schema 定义直接从上述目录加载，不必通过 `event_schemas` 表同步。`event_schemas` 表在第二阶段引入调用方鉴权时启用，为 Schema 校验提供运行时查询能力。
 
 <a id="42-事件类型-schema-格式"></a>
 ### 4.2 事件类型 Schema 格式（MVP）
@@ -721,7 +721,7 @@ config/                                   # 配置文件目录
 遵循 JSON Schema Draft-07，使用 `x-format` 扩展标注业务精度：
 
 ```yaml
-# event_schemas/order.paid.yaml
+# events/order/events/order.paid.yaml
 event_type: "order.paid"
 description: "订单支付成功通知"
 version: 1
@@ -768,7 +768,7 @@ schema:
 ### 4.3 供应商接入配置格式（MVP）
 
 ```yaml
-# vendors/crm_system.yaml
+# vendors/crm_system/vendor.yaml
 vendor_id: "crm_system"
 name: "CRM 系统"
 enabled: true
@@ -802,10 +802,10 @@ retry_policy:
 
 > HLD §5.3 定义结构化映射 + 插件组合方式。本节给出映射规则的完整格式。
 
-映射规则按 `(vendor_id, event_type)` 组合独立组织在 `mappings/{vendor_id}/{event_type}.yaml` 文件中：
+映射规则按 `(vendor_id, event_type)` 组合独立组织在 `vendors/{vendor_id}/{biz}/{event_type}.yaml` 文件中：
 
 ```yaml
-# mappings/crm_system/order.paid.yaml
+# vendors/crm_system/order/order.paid.yaml
 event_type: "order.paid"
 request:
   method: PATCH
@@ -853,22 +853,25 @@ request:
 <a id="45-路由规则格式"></a>
 ### 4.5 路由规则格式（MVP）
 
+路由授权声明按业务方组织在 `events/{biz}/route.yaml` 中：
+
 ```yaml
-# routing_rules.yaml
+# events/order/route.yaml
+biz: "order"
 rules:
-  # 简单映射：order.paid → [crm_system, ad_platform]
+  # order.paid → [crm_system, ad_platform]
   - event_type: "order.paid"
     vendor_id: "crm_system"
 
   - event_type: "order.paid"
     vendor_id: "ad_platform"
 
-  # 简单映射：order.refund → [crm_system]
+  # order.refund → [crm_system]
   - event_type: "order.refund"
     vendor_id: "crm_system"
 ```
 
-> **未来扩展**：第二阶段引入条件路由，支持 `condition: "payload.amount > 10000"` 语法，使用 expr 库做轻量表达式评估。
+> **未来扩展**：第二阶段引入条件路由和灰度控制，支持 `condition: "payload.amount > 10000"` 语法，使用 expr 库做轻量表达式评估。
 
 <a id="46-机密引用语法"></a>
 ### 4.6 机密引用语法（未来扩展）
