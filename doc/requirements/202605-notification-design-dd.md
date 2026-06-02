@@ -848,7 +848,34 @@ request:
 | `$source` | 引擎关键字，表示取值来源 | `$source: "@{payload.paid_at}"` |
 | `$format` | 引擎关键字，表示格式转换 | `$format: "yyyy-MM-dd"` |
 | `$type` | 引擎关键字，表示强制类型转换 | `$type: "string"`，可选值: `string` / `integer` / `number` / `boolean` |
+| `$each` | 引擎关键字，表示数组遍历 | `$each` 配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义元素映射规则 |
 | `$$field_name` | 转义为字面量 `$field_name` | `$$dollar_value: "test"` → 输出 `{"$dollar_value": "test"}` |
+
+**数组遍历（`$source` + `$each`）**：当源数据为数组，目标也需要以数组组织时，`$source` 指定源数组，`$each` 定义每个元素的映射规则。`item` 是当前元素的引用名——`@{item.field}` 表示"取当前元素的 field 字段"。
+
+```yaml
+# 输入: product_list = [{product_id: "p1", qty: 3, warehouse: "SH"}, ...]
+items:
+  $source: "@{payload.product_list}"
+  $each:
+    product_id: "@{item.product_id}"
+    quantity: "@{item.qty}"
+    location: "@{item.warehouse}"
+```
+
+输出：`items = [{product_id: "p1", quantity: 3, location: "SH"}, ...]`
+
+`$each` 内支持 `@{item.field}` 引用、静态值、`$format`/`$type` 等所有引擎关键字：
+
+```yaml
+items:
+  $source: "@{payload.order_list}"
+  $each:
+    order_sn: "@{item.order_id}"
+    total:
+      $source: "@{item.amount}"
+      $type: integer
+```
 
 <a id="45-路由规则格式"></a>
 ### 4.5 路由规则格式（MVP）
@@ -1113,16 +1140,32 @@ func (e *MappingEngine) BuildRequest(
 #### 5.3.1 字段引用解析器
 
 ```go
-// resolveString 解析字符串中的 @{payload.field} 引用
+// resolveString 解析字符串中的 @{payload.field} 和 @{item.field} 引用
+// @{payload.field} 从事件数据取值，@{item.field} 从 $each 遍历的当前元素取值
 // 不支持函数管道——HLD 明确禁止。复杂转换走 plugin
 func (e *MappingEngine) resolveString(tmpl string, payload map[string]any) (string, error) {
-    // 只识别 @{payload.field} 和 @{payload.a.b.c} 两种引用
-    re := regexp.MustCompile(`@\{payload\.([^}]+)\}`)
+    // 识别 @{payload.field} 和 @{item.field} 两种引用
+    re := regexp.MustCompile(`@\{(payload|item)\.([^}]+)\}`)
     return re.ReplaceAllStringFunc(tmpl, func(match string) string {
-        // 去掉 @{payload. 和 }
-        path := match[len("@{payload.") : len(match)-1]
-        val := getNestedField(payload, path)
-        return tostring(val)
+        inner := match[len("@{") : len(match)-1]
+        dotIdx := strings.Index(inner, ".")
+        scope := inner[:dotIdx]   // "payload" 或 "item"
+        path := inner[dotIdx+1:]
+
+        var data map[string]any
+        if scope == "item" {
+            if item, ok := payload["item"]; ok {
+                if itemMap, ok := item.(map[string]any); ok {
+                    data = itemMap
+                }
+            }
+        } else {
+            data = payload
+        }
+        if data == nil {
+            return ""
+        }
+        return tostring(getNestedField(data, path))
     }), nil
 }
 
@@ -1192,6 +1235,9 @@ func (e *MappingEngine) resolveNode(node any, payload map[string]any) (any, erro
         return e.resolveString(v, payload)
     case map[string]interface{}:
         // 处理 $ 关键字
+        if _, ok := v["$each"]; ok {
+            return e.resolveEachDirective(v, payload)
+        }
         if source, ok := v["$source"]; ok {
             return e.resolveSourceDirective(v, payload)
         }
@@ -1249,6 +1295,48 @@ func (e *MappingEngine) resolveSourceDirective(v map[string]any, payload map[str
     return raw, nil
 }
 
+// resolveEachDirective 处理 $source + $each 数组遍历指令
+// 从 $source 指定的源数组取值，对每个元素应用 $each 块内的映射规则
+// item 表示当前遍历到的数组元素
+func (e *MappingEngine) resolveEachDirective(v map[string]any, payload map[string]any) (any, error) {
+    sourceExpr, ok := v["$source"].(string)
+    if !ok {
+        return nil, fmt.Errorf("$each requires $source")
+    }
+    eachBlock, ok := v["$each"].(map[string]any)
+    if !ok {
+        return nil, fmt.Errorf("$each value must be a mapping block")
+    }
+
+    // 从 payload 中提取源数组
+    raw, err := e.resolveField(sourceExpr, payload)
+    if err != nil {
+        return nil, fmt.Errorf("resolve source for $each: %w", err)
+    }
+    srcArr, ok := raw.([]any)
+    if !ok {
+        return nil, fmt.Errorf("$source must resolve to an array, got %T", raw)
+    }
+
+    // 遍历数组，对每个元素构造 item 上下文并执行映射
+    result := make([]any, 0, len(srcArr))
+    for _, elem := range srcArr {
+        // 在 payload 中注入 item 键，使 @{item.field} 可被 resolveString 解析
+        itemPayload := make(map[string]any, len(payload)+1)
+        for k, v := range payload {
+            itemPayload[k] = v
+        }
+        itemPayload["item"] = elem
+        resolved, err := e.resolveNode(eachBlock, itemPayload)
+        if err != nil {
+            return nil, err
+        }
+        result = append(result, resolved)
+    }
+
+    return result, nil
+}
+
 // convertType 强制类型转换
 // 支持: string, integer, number, boolean
 func convertType(val any, typeName string) (any, error) {
@@ -1303,26 +1391,40 @@ func convertType(val any, typeName string) (any, error) {
 }
 
 // resolveField 从 $source 表达式中提取原始值
-// 纯 "@{payload.field}" → 返回原始类型
+// 纯 "@{payload.field}" 或 "@{item.field}" → 返回原始类型
 // 含前后缀如 "prefix_@{payload.field}_suffix" → 全部转为字符串拼接
 func (e *MappingEngine) resolveField(expr string, payload map[string]any) (any, error) {
-    re := regexp.MustCompile(`@\{payload\.([^}]+)\}`)
+    re := regexp.MustCompile(`@\{(payload|item)\.([^}]+)\}`)
     loc := re.FindStringIndex(expr)
     if loc == nil {
         return expr, nil // 无引用的纯字符串
     }
-    
+
+    // 根据 scope 确定取值对象
+    resolveOne := func(match string) any {
+        inner := match[len("@{") : len(match)-1]
+        dotIdx := strings.Index(inner, ".")
+        scope := inner[:dotIdx]
+        path := inner[dotIdx+1:]
+        if scope == "item" {
+            if item, ok := payload["item"]; ok {
+                if itemMap, ok := item.(map[string]any); ok {
+                    return getNestedField(itemMap, path)
+                }
+            }
+            return nil
+        }
+        return getNestedField(payload, path)
+    }
+
     // 只有单个纯引用（无前后缀），返回原始值
     if loc[0] == 0 && loc[1] == len(expr) {
-        path := expr[len("@{payload.") : len(expr)-1]
-        val := getNestedField(payload, path)
-        return val, nil
+        return resolveOne(expr), nil
     }
-    
+
     // 有前后缀或有多处引用，按字符串拼接
     result := re.ReplaceAllStringFunc(expr, func(match string) string {
-        path := match[len("@{payload.") : len(match)-1]
-        return tostring(getNestedField(payload, path))
+        return tostring(resolveOne(match))
     })
     return result, nil
 }
