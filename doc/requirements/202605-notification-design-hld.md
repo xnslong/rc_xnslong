@@ -999,37 +999,40 @@ count:
 
 无 `$type` 时保持 payload 原始类型。非法转换（如 `"abc"` → integer）返回错误，拒绝构造请求。
 
-> 引擎关键字以 `$` 前缀标识。不加 `$` 前缀的 key 即为输出字段名，即使叫 `source`、`format`、`type` 也不产生冲突。`$input` 通常从 Schema 的 `x-format` 自动推导，仅当需要覆盖 Schema 声明时手写。若输出字段名恰好以 `$` 开头（如 `$source`），用 `$$` 前缀表示字面量：`$$source` → 输出字段 `$source`。引擎关键字包括：`$source`（取值来源）、`$format`（格式转换）、`$type`（类型转换）、`$iterate_elem`（数组元素遍历）。其中前三个作用于单值字段，`$iterate_elem` 作用于数组级字段。
+> 引擎关键字以 `$` 前缀标识。不加 `$` 前缀的 key 即为输出字段名，即使叫 `source`、`format`、`type` 也不产生冲突。`$input` 通常从 Schema 的 `x-format` 自动推导，仅当需要覆盖 Schema 声明时手写。若输出字段名恰好以 `$` 开头（如 `$source`），用 `$$` 前缀表示字面量：`$$source` → 输出字段 `$source`。引擎关键字包括：`$source`（取值来源）、`$format`（格式转换）、`$type`（类型转换）、`$each`（数组遍历）。其中前三个作用于单值字段，`$each` 作用于数组级字段。
 
-**数组遍历**：当源数据为数组，目标也需要以数组组织时，通过 `$source` 指定源数组，`$iterate_elem` 定义每个元素的映射规则。`elem` 表示源数组中的当前元素，其字段通过 `@{elem.field}` 引用：
+**数组遍历**：当源数据为数组，目标也需要以数组组织时，存在两种表达方案。先并列展示两种写法及其输出，再对比取舍。
 
+**方案一：关键字块式（`$each`）✅ 采用**
 ```yaml
 items:
-  $source: "@{payload.product_list}"      # 源数组
-  $iterate_elem:                          # 遍历每个元素的映射规则
-    product_id: "@{elem.product_id}"      # elem.product_id → items[].product_id
-    quantity: "@{elem.qty}"               # elem.qty → items[].quantity
-    location: "@{elem.warehouse}"         # elem.warehouse → items[].location
+  $source: "@{payload.product_list}"
+  $each:
+    product_id: "@{item.product_id}"
+    quantity: "@{item.qty}"
+    location: "@{item.warehouse}"
 ```
+输出（唯一确定）：`items = [{product_id: "p1", quantity: 3, location: "SH"}, ...]`
 
-输出示例（payload.product_list = [{product_id: "p1", qty: 3, warehouse: "SH"}, ...]）：
-
-```json
-"items": [
-  {"product_id": "p1", "quantity": 3, "location": "SH"}
-]
-```
-
-`$iterate_elem` 内的映射规则与结构化映射语法完全一致，支持 `@{elem.field}` 引用、静态值、`$format`/`$type` 引擎关键字：
-
+**方案二：路径通配符（`[*]`）❌ 未采用**
 ```yaml
-items:
-  $source: "@{payload.order_list}"
-  $iterate_elem:
-    order_sn: "@{elem.order_id}"
-    total:
-      $source: "@{elem.amount}"
-      $type: integer
+items[].product_id: "@{payload.product_list[*].product_id}"
+items[].quantity: "@{payload.product_list[*].qty}"
+items[].location: "@{payload.product_list[*].warehouse}"
+```
+输出（有歧义——以下两种理解都有合理解释空间）：
+- 理解 A（对象数组）：`items = [{product_id: "p1", quantity: 3, location: "SH"}, ...]`
+- 理解 B（字段分组）：`items = {product_id: ["p1", "p2"], quantity: [3, 5], location: ["SH", "BJ"]}`
+
+| 对比维度 | 关键字块式（`$each`）✅ 采用 | 路径通配符（`[*]`）❌ 未采用 |
+|---------|----------------------------------|---------------------------|
+| **歧义性** | 无歧义——块内映射明确作用于同一数组元素 | 有歧义——对象数组和字段分组，语法上无法区分 |
+| **输出结构可读性** | 一眼看出输出是对象数组 | 需要读者在心里"编译"一次才能确定 |
+| **能力完整度** | 完整——`$format`/`$type`/静态值/嵌套映射均可直接混用 | 不足——重命名、格式化、静态值需额外语法 |
+| **纯投影简洁度** | 略重（多一层缩进和关键字声明） | 简洁——字段不变时一行一个路径搞定 |
+| **与现有体系一致性** | ✅ 与 `$source`/`$format`/`$type` 属同一语法体系 | ❌ 不同的路径风格，与现有关键字不统一 |
+
+选择关键字块式方案的核心理由：**配置的第一原则是"看一眼就能判断对错"**，歧义不可接受。路径通配符仅在纯字段投影场景有简洁优势，但不足以弥补歧义风险。若将来纯投影场景大量出现，可考虑将通配符作为关键字块式的简写语法糖使用。
 
 **配置结构**：一个供应商可能接收多种事件类型，不同事件的接口和字段映射不同。配置按共享和事件专属分层：
 
