@@ -1003,7 +1003,7 @@ count:
 
 无 `$type` 时保持 payload 原始类型。非法转换（如 `"abc"` → integer）返回错误，拒绝构造请求。
 
-> **引用语法**：统一使用 `@{scope:path}` 从外部数据源取值——`@{payload:order_id}`（通知数据）、`@{item:name}`（当前数组元素）、`@{secret:api_token}`（机密存储）。scope 标识数据源，path 是 scope 内的字段路径。`$` 前缀用于引擎关键字（`$source`、`$format`、`$type`、`$each`），与引用语法互补。不加 `$` 前缀的 key 即为输出字段名，即使叫 `source`、`format`、`type` 也不产生冲突。若输出字段名恰好以 `$` 开头（如 `$source`），用 `$$` 前缀表示字面量：`$$source` → 输出字段 `$source`。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素。
+> **引用语法**：统一使用 `@{scope:path}` 从外部数据源取值——`@{payload:order_id}`（通知数据）、`@{item}` 或 `@{item:name}`（当前数组元素——`@{item}` 引用元素本身的值，`@{item:name}` 引用元素对象上名为 name 的字段）、`@{secret:api_token}`（机密存储）。scope 标识数据源，path 是 scope 内的字段路径。`$` 前缀用于引擎关键字（`$source`、`$format`、`$type`、`$each`），与引用语法互补。不加 `$` 前缀的 key 即为输出字段名，即使叫 `source`、`format`、`type` 也不产生冲突。若输出字段名恰好以 `$` 开头（如 `$source`），用 `$$` 前缀表示字面量：`$$source` → 输出字段 `$source`。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素。
 
 **数组遍历**：当源数据为数组，目标也需要以数组组织时，存在两种表达方案。先并列展示两种写法及其输出，再对比取舍。
 
@@ -1019,6 +1019,43 @@ items:
 输出（唯一确定）：`items = [{product_id: "p1", quantity: 3, location: "SH"}, ...]`
 
 `$each` 会遍历 `$source` 指定的数组，对每个元素执行块内的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素——`@{item:product_id}` 表示"取当前元素的 product_id 字段"。`@{payload:*}` 在 `$each` 块内同样可用，指向原始通知数据。
+
+**原始值数组处理**：当源数组元素为原始值（数字、字符串等，而非对象）时，使用 `@{item}`（不带字段路径）引用当前元素的值本身：
+
+```yaml
+# 输入：{ produce_list: [1, 2, 3] }
+# 输出：{ items: [{ product: 1 }, { product: 2 }, { product: 3 }] }
+items:
+  $source: "@{payload:produce_list}"
+  $each:
+    product: "@{item}"
+```
+
+`@{item}` 与 `@{item:field}` 的对比如下——前者取"当前元素的值本身"，后者取"当前元素对象上名为 field 的属性"。若数组元素就是数字或字符串，则只能用 `@{item}`。
+
+`@{item}` 同样支持 `$type`、`$format` 等引擎关键字：
+
+```yaml
+# 输入：{ produce_list: [1, 2, 3] }
+# 输出：{ items: [{ product: "1" }, { product: "2" }, { product: "3" }] }
+items:
+  $source: "@{payload:produce_list}"
+  $each:
+    product:
+      $source: "@{item}"
+      $type: string
+
+# 输入：{ end_dates: ["2026-06-01", "2026-06-15"] }
+# 输出：{ closing_dates: [{ date: "2026-06-01T00:00:00Z" }, ...] }
+closing_dates:
+  $source: "@{payload:end_dates}"
+  $each:
+    date:
+      $source: "@{item}"
+      $format: "iso8601"
+```
+
+`@{payload:*}` 在 `$each` 块内同样可用，指向原始通知数据。
 
 **方案二：路径通配符（`[*]`）❌ 未采用**
 ```yaml
