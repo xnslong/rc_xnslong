@@ -1015,35 +1015,35 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     START(["Route(notificationId)"])
-    IDEMP{"该通知已有 delivery_tasks?"}
-    LOAD["从 DB 加载通知记录"]
-    EXIST{"记录存在?"}
-    ROUTE["查询路由规则，提取供应商 ID"]
-    MATCH{"有匹配的供应商?"}
-    FAILED["更新通知状态 = FAILED"]
-    RET_SUCC0["return SUCCESS"]
-    DB_TX["开启 DB 事务<br>创建 delivery_tasks<br>提交事务"]
-    MQ_LOOP["遍历每个 deliveryTask<br>向 MQ 投递队列发消息"]
-    ALL_OK{"全部 MQ 发布成功?"}
-    UPDATE_OK["更新通知状态 = DELIVERING"]
-    RET_SUCC["return SUCCESS<br>（ACK 触发消息）"]
-    RET_FAIL["更新通知状态 = DELIVERING（状态已推进）<br>return FAILURE<br>（NACK 触发消息，重新入队）"]
+    IDEMP{"已有 delivery_tasks？"}
+
+    subgraph CREATE_TASKS["创建 delivery_tasks"]
+        LOAD["加载通知 & 路由规则"]
+        VENDOR{"有匹配供应商？"}
+        CREATE["DB 逐一创建（幂等）"]
+    end
+
+    subgraph PUB["MQ 发布"]
+        PUBLISH["向 MQ 逐一发消息"]
+        ALL_OK{"全部发布成功？"}
+    end
+
+    DONE["处理完成，ACK 触发消息"]
+    RETRY["放弃处理，NACK 触发消息（下次重试）"]
 
     START --> IDEMP
-    IDEMP -->|"是，跳过 DB 步骤"| ROUTE
-    IDEMP -->|"否"| LOAD
-    LOAD --> EXIST
-    EXIST -->|"不存在，数据异常"| RET_SUCC0
-    EXIST -->|"存在"| ROUTE
-    ROUTE --> MATCH
-    MATCH -->|"空列表"| FAILED
-    FAILED --> RET_SUCC0
-    MATCH -->|"有匹配"| DB_TX
-    DB_TX --> MQ_LOOP
-    MQ_LOOP --> ALL_OK
-    ALL_OK -->|"是"| UPDATE_OK
-    UPDATE_OK --> RET_SUCC
-    ALL_OK -->|"部分失败，MQ 可重发"| RET_FAIL
+    IDEMP -- "是" --> PUB
+    IDEMP -- "否" --> CREATE_TASKS
+    LOAD --> VENDOR
+    VENDOR -- "空" --> DONE
+    VENDOR -- "有" --> CREATE
+    CREATE --> PUB
+    PUBLISH --> ALL_OK
+    ALL_OK -- "是" --> DONE
+    ALL_OK -- "否" --> RETRY
+
+    CREATE_TASKS -.-|"任何一步系统异常"| RETRY
+    PUB -.-|"任何一步系统异常"| RETRY
 ```
 
 <a id="53-请求拼装引擎"></a>
@@ -1170,24 +1170,13 @@ flowchart TD
     ENTER(["resolveNode(node, ctx)"])
     TYPE{"node 类型？"}
 
-    T_FIELD["resolveField(node, ctx)<br>解析 @{} 引用"]
-    T_MAP["进入字典节点处理"]
-    T_ARRAY["遍历每个元素（递归 resolveNode）"]
-    T_PRIMITIVE["返回原始值（number / boolean / null）"]
+    TYPE -->|"String"| FIELD["resolveField(node, ctx)"]
+    TYPE -->|"Array"| ARRAY["遍历每个元素，递归 resolveNode"]
+    TYPE -->|"Number / Boolean / null"| PRIMITIVE["原样返回"]
+    TYPE -->|"Dict"| MAP{"含 $source 键？"}
 
-    ENTER --> TYPE
-
-    TYPE -->|"String"| T_FIELD
-    TYPE -->|"Map / Dict"| T_MAP
-    TYPE -->|"Array"| T_ARRAY
-    TYPE -->|"Number, Boolean, null"| T_PRIMITIVE
-
-    HAS_SOURCE{"含 $source 键？"}
-    NORMAL_MAP["遍历每个字段（递归 resolveNode）：<br>· 普通键 → 递归处理值<br>· $$ 前缀 → 转义为 $"]
-
-    T_MAP --> HAS_SOURCE
-    HAS_SOURCE -->|"是"| SOURCE["resolveSourceDirective(node, ctx)<br>统一处理 $source / $format / $type / $each<br>（含 $each 时内部走数组遍历）"]
-    HAS_SOURCE -->|"否"| NORMAL_MAP
+    MAP -->|"否"| NORMAL["遍历字段，递归处理值<br>（$$ 前缀转义为 $）"]
+    MAP -->|"是"| SOURCE["resolveSourceDirective(node, ctx)<br>内部按 $each 分派"]
 ```
 
 **resolveSourceDirective — $source 处理**（伪码）：
