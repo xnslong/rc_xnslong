@@ -236,46 +236,14 @@ erDiagram
         timestamp   updated_at
     }
 
-    event_schemas {
-        serial      id              PK
-        string      event_type
-        int         version
-        jsonb       schema_def      "JSON Schema (Draft-07), 含 x-format 扩展"
-        text        description
-        string      status          "ACTIVE / DEPRECATED"
-        timestamp   created_at
-        timestamp   updated_at
-    }
-
     notifications ||--o{ delivery_tasks : "投递"
     notifications ||--o{ dead_letter_records : "死信"
     delivery_tasks ||--o| dead_letter_records : "死信"
 ```
 
+> **Schema 管理说明**：事件类型 Schema（JSON Schema Draft-07）通过 Git 管理，存放在 `config/events/` 目录下，不在 DB 中存储。接收网关在收到提交通知时，从本地配置文件加载对应 Schema 校验 payload。详见 §4.2。
+
 #### 2.2.2 未来扩展：callers 表
-
-> MVP 阶段不启用调用方鉴权。此表在第二阶段引入时启用。
-
-```mermaid
-erDiagram
-    callers {
-        bigserial   id                 PK
-        string      caller_id          唯一
-        string      name
-        string      api_key_hash       "SHA-256(api_key)"
-        string      api_secret_hash    "bcrypt(api_secret)"
-        jsonb       allowed_events     "[*]表示全部"
-        jsonb       rate_limit         "tokens_per_second, burst"
-        string      status             "ACTIVE / DISABLED"
-        string      contact
-        timestamp   created_at
-        timestamp   updated_at
-    }
-
-    callers ||--o{ notifications : "未来 FK"
-```
-
-> **说明**：`event_schemas` 表在 MVP 中即启用。接收网关在收到提交通知时，根据 `event_type` 加载对应 Schema 校验 payload。
 
 <a id="23-索引策略"></a>
 ### 2.3 索引策略
@@ -431,7 +399,7 @@ Content-Type: application/json
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `event` | string | 是 | 事件类型，如 `order.paid`，必须在 `event_schemas` 中注册 |
+| `event` | string | 是 | 事件类型，如 `order.paid`，必须已在 `config/events/` 中定义 Schema |
 | `idempotent_key` | string | 否 | 调用方幂等键，建议使用业务唯一标识。不传时系统自动生成 UUID |
 | `payload` | object | 是 | 事件载荷，需符合该 event_type 的 JSON Schema |
 
@@ -660,7 +628,7 @@ config/                                   # 配置文件根目录
             └── {biz_event}.yaml          #    投递契约（API 端点 + 映射规则 + 响应判定 + 重试策略）
 ```
 
-> MVP 阶段事件 Schema 定义直接从上述目录加载，不必通过 `event_schemas` 表同步。`event_schemas` 表在第二阶段引入调用方鉴权时启用，为 Schema 校验提供运行时查询能力。
+> MVP 阶段事件 Schema 定义直接从上述目录加载，无需 DB 存储。
 
 <a id="42-事件类型-schema-格式"></a>
 ### 4.2 事件类型 Schema 格式（MVP）
@@ -886,7 +854,7 @@ sequenceDiagram
 ```
 Submit(request):
   // Step 1: 校验 payload 是否符合事件类型的 JSON Schema
-  // 从 event_schemas 表加载该事件类型的 Schema 定义
+  // 从本地 config/events/ 目录加载该事件类型的 Schema 定义
   schemaDefinition ← 加载事件类型的 Schema 定义(request.event_type)
   
   ● 该事件类型未在系统中注册 → 拒收通知，返回 422 EVENT_NOT_FOUND
