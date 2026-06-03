@@ -265,25 +265,16 @@ erDiagram
 <a id="24-分区与分片策略"></a>
 ### 2.4 分区与分片策略
 
-#### 2.4.1 时间分区
+#### 2.4.1 时间分区（未来扩展）
 
-`delivery_tasks` 和 `dead_letter_records` 按 `created_at` 按月范围分区。
+MVP 阶段数据量较小，不启用表分区。当 `delivery_tasks` 数据量达到千万级后，预计按 `created_at` 按月范围分区。届时根据实际查询模式决定分区粒度（月 / 季 / 年）。
 
-**为什么分区对象选这两张表？**
-- `delivery_tasks` 和 `dead_letter_records` 是投递环节的核心表，写入量大且随运营时间持续增长
-- 这两张表有明确的保留周期（已完成/死信的分区到期可整区删除），分区让清理无需逐行 DELETE
+**分区维护策略（预定，待定稿）**：
 
-**为什么按月而非按周或年？**
-- 周分区太碎：单分区行数少，跨月查询需扫描多个分区，反而退化
-- 年分区太大：数据量超过千万级别后索引维护和备份操作窗口过长
-- 月度是平衡点：单月数据量适中，且业务观察周期也以月为单位
-
-**分区维护**：
-
-| 操作 | 周期 | 策略 | 为什么 |
-|------|------|------|--------|
-| 预创建 | 每月 25 日 | 提前创建下月分区 | 避免月底零点大批量写入时触发动建分区，引起写入抖动 |
-| 清理 | 每季度 | 删除超过保留周期（默认 90 天）的分区 | 直接 DROP PARTITION 而非 DELETE，秒级完成且不影响索引。`notifications` 表保留 180 天，TBD 根据数据量决定是否追加入分区方案 |
+| 操作 | 周期 | 说明 |
+|------|------|------|
+| 预创建分区 | 每月（或每季度） | 提前创建下期分区，避免写入抖动 |
+| 清理历史分区 | 每季度 | 直接 DROP PARTITION 而非 DELETE，秒级完成。保留周期默认 90 天 |
 
 #### 2.4.2 预分片设计
 
@@ -723,7 +714,7 @@ request:
 | `$type` | `$type: "integer"` | 引擎关键字：强制类型转换。无 `$type` 则保持 payload 原始类型 |
 | `$each` | `$each:` 后接元素映射块 | 引擎关键字：数组遍历。配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义每个元素的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素，通过 `@{item.field}` 引用其字段 |
 
-**DeliverySpec 组合**：MappingConfig 和 ResponseJudgment 按 `(vendor_id, event_type)` 组合为 DeliverySpec（投递规格），由 ConfigLoader 统一返回。Judgment 可选，非 nil 时覆盖供应商级别的默认判决规则。详见 §9.3.1。
+**DeliverySpec 组合**：MappingConfig 和 ResponseJudgment 按 `(vendor_id, event_type)` 组合为 DeliverySpec（投递契约），由 ConfigLoader 统一返回。Judgment 可选，非 nil 时覆盖供应商级别的默认判决规则。详见 §9.3.1。
 
 **`$` 前缀处理规则**：
 
@@ -1285,9 +1276,9 @@ processMessage(msg):
     记录错误日志("deliveryTask not found", msg.body.delivery_task_id)
     return
 
-  // Step 2: 加载供应商配置和投递规格
+  // Step 2: 加载供应商配置和投递契约
   vendorConfig  ← 获取供应商配置(deliveryTask.vendorId)
-  deliverySpec  ← 获取投递规格(deliveryTask.vendorId, deliveryTask.eventType)
+  deliverySpec  ← 获取投递契约(deliveryTask.vendorId, deliveryTask.eventType)
 
   // Step 3: 加载原始通知的 payload（映射引擎的输入）
   payload ← 从 DB 查询通知 payload(deliveryTask.notificationId)
@@ -1742,7 +1733,7 @@ config/                     # 示例配置文件目录
 
 #### 9.3.1 ConfigLoader（MVP：本地文件加载）
 
-**DeliverySpec —— 投递规格组合**：
+**DeliverySpec —— 投递契约**：
 
 ```mermaid
 classDiagram
@@ -1751,7 +1742,7 @@ classDiagram
         +ResponseJudgment judgment  // 可选，覆盖供应商级别默认判决
         // +SignConfig sign       // 未来：签名逻辑
     }
-    note "DeliverySpec 描述 '将一条通知投递给一个供应商' 的完整规格。\n包括输入侧映射 (payload → request) 和输出侧判决 (response 判定)"
+    note "DeliverySpec 描述 '将一条通知投递给一个供应商' 的完整契约。\n包括输入侧映射 (payload → request) 和输出侧判决 (response 判定)"
 
     class ConfigLoader {
         -String configDir
