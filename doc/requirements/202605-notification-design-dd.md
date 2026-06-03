@@ -846,7 +846,7 @@ request:
 | `$source` | `$source: "@{payload.paid_at}"` | 引擎关键字：取值来源 |
 | `$format` | `$format: "yyyy-MM-dd"` | 引擎关键字：格式转换 |
 | `$type` | `$type: "integer"` | 引擎关键字：强制类型转换。无 `$type` 则保持 payload 原始类型 |
-| `$each` | `$each:` 后接元素映射块 | 引擎关键字：数组遍历。配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义每个元素的映射规则，当前元素通过 `@{item.field}` 引用 |
+| `$each` | `$each:` 后接元素映射块 | 引擎关键字：数组遍历。配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义每个元素的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素，通过 `@{item.field}` 引用其字段 |
 
 **DeliverySpec 组合**：MappingConfig 和 ResponseJudgment 按 `(vendor_id, event_type)` 组合为 DeliverySpec（投递规格），由 ConfigLoader 统一返回。Judgment 可选，非 nil 时覆盖供应商级别的默认判决规则。详见 §9.3.1。
 
