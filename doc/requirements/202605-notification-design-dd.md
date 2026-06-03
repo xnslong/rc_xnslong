@@ -682,6 +682,16 @@ request:
             product_id: "@{item:product_id}"
             quantity: "@{item:qty}"
             location: "@{item:warehouse}"
+        produce_items:                       # 原始值数组：遍历 produce_list 生成 [{product: 1}, ...]
+          $source: "@{payload:produce_list}"
+          $each:
+            product: "@{item}"
+        produce_str:                         # 原始值数组 + 类型转换
+          $source: "@{payload:produce_list}"
+          $each:
+            product:
+              $source: "@{item}"
+              $type: string
 ```
 
 **映射语法完整参考**：
@@ -690,14 +700,15 @@ request:
 |------|------|------|
 | `@{payload:field}` | `@{payload:order_id}` | 从 payload 取值 |
 | `@{payload:a.b.c}` | `@{payload:user.address.city}` | 嵌套路径访问 |
-| `@{item:field}` | `@{item:product_id}` | 从 `$each` 遍历的当前元素取值 |
+| `@{item}` | `@{item}` | 从 `$each` 遍历的当前元素取值（原始值数组：元素本身的值） |
+| `@{item:field}` | `@{item:product_id}` | 从 `$each` 遍历的当前元素取值（对象数组：元素的某字段） |
 | `@{item:a.b}` | `@{item:user.address.city}` | 当前元素的嵌套路径访问 |
 | `"static_value"` | `"customer"` | 静态字符串 |
 | `123` | `29900` | 静态数字 |
 | `$source` | `$source: "@{payload:paid_at}"` | 引擎关键字：取值来源 |
 | `$format` | `$format: "yyyy-MM-dd"` | 引擎关键字：格式转换 |
 | `$type` | `$type: "integer"` | 引擎关键字：强制类型转换。无 `$type` 则保持 payload 原始类型 |
-| `$each` | `$each:` 后接元素映射块 | 引擎关键字：数组遍历。配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义每个元素的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素，通过 `@{item:field}` 引用其字段 |
+| `$each` | `$each:` 后接元素映射块 | 引擎关键字：数组遍历。配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义每个元素的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素。对象数组用 `@{item:field}` 引用字段，原始值数组用 `@{item}` 引用元素本身的值 |
 
 **DeliverySpec 组合**：MappingConfig 和 ResponseJudgment 按 `(vendor_id, event_type)` 组合为 DeliverySpec（投递契约），由 ConfigLoader 统一返回。Judgment 可选，非 nil 时覆盖供应商级别的默认判决规则。详见 §9.3.1。
 

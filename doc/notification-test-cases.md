@@ -184,7 +184,7 @@ TC1.2-test1                ❌ 坏：无意义
 
 #### 3.7.5 `$each` — 数组遍历映射
 
-> `$source + $each` 组合将源数组遍历转换为对象数组。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素。`@{payload:*}` 在 `$each` 块内同样可用。
+> `$source + $each` 组合将源数组遍历转换为对象数组。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素。对象数组用 `@{item:field}` 引用字段，原始值数组用 `@{item}`（无路径）引用元素本身的值。`@{payload:*}` 在 `$each` 块内同样可用。
 
 | 用例号 | 步骤 | 预期 | 状态 |
 |--------|------|------|------|
@@ -196,6 +196,10 @@ TC1.2-test1                ❌ 坏：无意义
 | TC3.7-each_payload_ref | payload: `{user_id: "u_001", products: [{id: "p1", qty: 3}]}`<br>模板: `$source: "@{payload:products}"`<br>`$each: {product_id: "@{item:id}", quantity: "@{item:qty}", user: "@{payload:user_id}"}` | vendor body: `[{product_id: "p1", quantity: 3, user: "u_001"}]` | ✅ a837d89 (2026-06-03) |
 | TC3.7-each_empty_array | payload: `{products: []}`<br>模板: `$source: "@{payload:products}"`<br>`$each: {product_id: "@{item:id}"}` | vendor body: `[]`（空数组） | ✅ a837d89 (2026-06-03) |
 | TC3.7-each_not_array | payload: `{products: "not_an_array"}`<br>模板: `$source: "@{payload:products}"`<br>`$each: {product_id: "@{item:id}"}` | 映射失败，通知最终 FAILED | ✅ a837d89 (2026-06-03) |
+| TC3.7-each_primitive | payload: `{produce_list: [1, 2, 3]}`<br>模板: `$source: "@{payload:produce_list}"`<br>`$each: {product: "@{item}"}` | vendor body: `[{product: 1}, {product: 2}, {product: 3}]` | 🔲 |
+| TC3.7-each_primitive_with_type | payload: `{produce_list: [1, 2, 3]}`<br>模板: `$source: "@{payload:produce_list}"`<br>`$each: {product: {$source: "@{item}", $type: "string"}}` | vendor body: `[{product: "1"}, {product: "2"}, {product: "3"}]` | 🔲 |
+| TC3.7-each_primitive_with_format | payload: `{end_dates: ["2026-06-01", "2026-06-15"]}`<br>模板: `$source: "@{payload:end_dates}"`<br>`$each: {date: {$source: "@{item}", $format: "2006-01-02T15:04:05Z"}}` | vendor body: `[{date: "2026-06-01T00:00:00Z"}, {date: "2026-06-15T00:00:00Z"}]` | 🔲 |
+| TC3.7-each_primitive_empty | payload: `{produce_list: []}`<br>模板: `$source: "@{payload:produce_list}"`<br>`$each: {product: "@{item}"}` | vendor body: `[]`（空数组） | 🔲 |
 
 ---
 
