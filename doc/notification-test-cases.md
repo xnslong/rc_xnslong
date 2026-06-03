@@ -143,31 +143,31 @@ TC1.2-test1                ❌ 坏：无意义
 
 > 验证 Mapping 引擎将通知 payload 按模板规则转换为 vendor 请求体的正确性。
 
-#### 3.7.1 `@{payload.field}` — 字段引用取值
+#### 3.7.1 `@{payload:field}` — 字段引用取值
 
 | 用例号 | 步骤 | 预期 | 状态 |
 |--------|------|------|------|
-| TC3.7-pure_field_ref | payload: `{order_id: "123"}`<br>模板: `@{payload.order_id}` | vendor body: `"123"` | ✅ |
-| TC3.7-nested_path | payload: `{a: {b: {c: "v"}}}`<br>模板: `@{payload.a.b.c}` | vendor body: `"v"` | ✅ |
-| TC3.7-missing_field | payload: `{}`<br>模板: `@{payload.missing}` | vendor body: `""`（空字符串） | ✅ |
-| TC3.7-non_map_intermediate | payload: `{a: "string"}`<br>模板: `@{payload.a.b}` | vendor body: `""`（中间路径非 map 时返回空） | ✅ |
+| TC3.7-pure_field_ref | payload: `{order_id: "123"}`<br>模板: `@{payload:order_id}` | vendor body: `"123"` | ✅ |
+| TC3.7-nested_path | payload: `{a: {b: {c: "v"}}}`<br>模板: `@{payload:a.b.c}` | vendor body: `"v"` | ✅ |
+| TC3.7-missing_field | payload: `{}`<br>模板: `@{payload:missing}` | vendor body: `""`（空字符串） | ✅ |
+| TC3.7-non_map_intermediate | payload: `{a: "string"}`<br>模板: `@{payload:a.b}` | vendor body: `""`（中间路径非 map 时返回空） | ✅ |
 | TC3.7-static_template | payload: 任意<br>模板: `static-value` | vendor body: `"static-value"` | ✅ |
-| TC3.7-mixed_template | payload: `{id: 123}`<br>模板: `user-@{payload.id}` | vendor body: `"user-123"` | ✅ |
+| TC3.7-mixed_template | payload: `{id: 123}`<br>模板: `user-@{payload:id}` | vendor body: `"user-123"` | ✅ |
 
 #### 3.7.2 `$source` — 原始类型保持
 
 | 用例号 | 步骤 | 预期 | 状态 |
 |--------|------|------|------|
-| TC3.7-source_integer | payload: `{count: 42}`<br>模板: `$source: "@{payload.count}"` | vendor body: `42`（保持 integer） | ✅ |
-| TC3.7-source_boolean | payload: `{active: true}`<br>模板: `$source: "@{payload.active}"` | vendor body: `true`（保持 boolean） | ✅ |
-| TC3.7-source_null | payload: `{note: null}`<br>模板: `$source: "@{payload.note}"` | vendor body: `null`（保持 null） | ✅ |
-| TC3.7-source_prefix_suffix | payload: `{id: 42}`<br>模板: `$source: "id_@{payload.id}"` | vendor body: `"id_42"`（string） | ✅ |
+| TC3.7-source_integer | payload: `{count: 42}`<br>模板: `$source: "@{payload:count}"` | vendor body: `42`（保持 integer） | ✅ |
+| TC3.7-source_boolean | payload: `{active: true}`<br>模板: `$source: "@{payload:active}"` | vendor body: `true`（保持 boolean） | ✅ |
+| TC3.7-source_null | payload: `{note: null}`<br>模板: `$source: "@{payload:note}"` | vendor body: `null`（保持 null） | ✅ |
+| TC3.7-source_prefix_suffix | payload: `{id: 42}`<br>模板: `$source: "id_@{payload:id}"` | vendor body: `"id_42"`（string） | ✅ |
 
 #### 3.7.3 `$type` — 强制类型转换
 
 | 用例号 | 步骤 | 预期 | 状态 |
 |--------|------|------|------|
-| TC3.7-type_no_explicit | payload: `{count: 42}`，event schema 声明 count 为 integer<br>模板: `$source: "@{payload.count}"`（无 `$type`） | vendor body: `42`（使用 event schema 声明的 integer 类型） | ✅ |
+| TC3.7-type_no_explicit | payload: `{count: 42}`，event schema 声明 count 为 integer<br>模板: `$source: "@{payload:count}"`（无 `$type`） | vendor body: `42`（使用 event schema 声明的 integer 类型） | ✅ |
 | TC3.7-type_int_to_string | payload: `{count: 42}`<br>`$type: string` | vendor body: `"42"` | ✅ |
 | TC3.7-type_string_to_int | payload: `{count_str: "42"}`<br>`$type: integer` | vendor body: `42` | ✅ |
 | TC3.7-type_string_to_number | payload: `{price: "29.99"}`<br>`$type: number` | vendor body: `29.99` | ✅ |
@@ -179,6 +179,21 @@ TC1.2-test1                ❌ 坏：无意义
 | 用例号 | 步骤 | 预期 | 状态 |
 |--------|------|------|------|
 | TC3.7-format_timestamp | payload: `{paid_at: 1716518400}`<br>模板: `$format: "2006-01-02"` | vendor body: `"2024-05-24"` | ✅ |
+
+#### 3.7.5 `$each` — 数组遍历映射
+
+> `$source + $each` 组合将源数组遍历转换为对象数组。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素。`@{payload:*}` 在 `$each` 块内同样可用。
+
+| 用例号 | 步骤 | 预期 | 状态 |
+|--------|------|------|------|
+| TC3.7-each_basic | payload: `{products: [{id: "p1", qty: 3}, {id: "p2", qty: 5}]}`<br>模板: `$source: "@{payload:products}"`<br>`$each: {product_id: "@{item:id}", quantity: "@{item:qty}"}` | vendor body: `[{product_id: "p1", quantity: 3}, {product_id: "p2", quantity: 5}]` | ➖ |
+| TC3.7-each_with_format | payload: `{orders: [{date: 1716518400, total: 100}]}`<br>模板: `$source: "@{payload:orders}"`<br>`$each: {order_date: {$source: "@{item:date}", $format: "2006-01-02"}, amount: "@{item:total}"}` | vendor body: `[{order_date: "2024-05-24", amount: 100}]` | ➖ |
+| TC3.7-each_with_type | payload: `{items: [{price: "29.99", count: "3"}]}`<br>模板: `$source: "@{payload:items}"`<br>`$each: {price: {$source: "@{item:price}", $type: "number"}, count: {$source: "@{item:count}", $type: "integer"}}` | vendor body: `[{price: 29.99, count: 3}]` | ➖ |
+| TC3.7-each_static_mixed | payload: `{products: [{id: "p1"}]}`<br>模板: `$source: "@{payload:products}"`<br>`$each: {product_id: "@{item:id}", source: "notification"}` | vendor body: `[{product_id: "p1", source: "notification"}]` | ➖ |
+| TC3.7-each_nested | payload: `{orders: [{id: "o1", items: [{name: "apple", price: 5}]}]}`<br>模板: `$source: "@{payload:orders}"`<br>`$each: {order_id: "@{item:id}", products: {$source: "@{item:items}", $each: {product_name: "@{item:name}", cost: "@{item:price}"}}}` | vendor body: `[{order_id: "o1", products: [{product_name: "apple", cost: 5}]}]` | ➖ |
+| TC3.7-each_payload_ref | payload: `{user_id: "u_001", products: [{id: "p1", qty: 3}]}`<br>模板: `$source: "@{payload:products}"`<br>`$each: {product_id: "@{item:id}", quantity: "@{item:qty}", user: "@{payload:user_id}"}` | vendor body: `[{product_id: "p1", quantity: 3, user: "u_001"}]` | ➖ |
+| TC3.7-each_empty_array | payload: `{products: []}`<br>模板: `$source: "@{payload:products}"`<br>`$each: {product_id: "@{item:id}"}` | vendor body: `[]`（空数组） | ➖ |
+| TC3.7-each_not_array | payload: `{products: "not_an_array"}`<br>模板: `$source: "@{payload:products}"`<br>`$each: {product_id: "@{item:id}"}` | 映射失败，通知最终 FAILED | ➖ |
 
 ---
 
