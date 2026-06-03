@@ -216,7 +216,6 @@ erDiagram
         string      status           "PENDING / DELIVERING / SUCCEEDED / FAILED / IGNORED / DEAD_LETTER"
         int         retry_count      "已重试次数（不含首次）"
         int         max_retries      "从供应商配置继承，含首次"
-        timestamp   next_retry_at    "下次重试时间，Worker 消费时过滤"
         text        last_error       "摘要级错误信息"
         timestamp   created_at
         timestamp   updated_at
@@ -261,8 +260,7 @@ erDiagram
 | 用途 | 索引字段 | 为什么 |
 |------|---------|--------|
 | 通知详情展示 | `(notification_id)` | 用户查通知详情时需列出所有关联的投递任务。`notification_id` 是 FK，查询频繁，索引必不可少 |
-| 待重试任务扫描 | `(vendor_id, status, next_retry_at)` 条件索引，仅 `FAILED / DEAD_LETTER` | Worker 需要找出已失败且到期的任务重试。条件索引只包含需要扫描的行，`next_retry_at` 支持范围查询"哪些到重试时间了" |
-| 新任务消费 | `(status, created_at)` 条件索引，仅 `PENDING` | Worker 扫描刚创建待处理的任务。条件索引只包含 `PENDING` 行，索引体积很小 |
+| 新任务消费 | `(status, created_at)` 条件索引，仅 `PENDING` | Worker 从队列取消息后需加载 task 信息。条件索引只包含 `PENDING` 行，索引体积很小 |
 | 死信运营查询 | `(vendor_id, created_at DESC)` 条件索引，仅 `DEAD_LETTER` | 运维查某个供应商的死信情况时使用。`DEAD_LETTER` 是低频状态行，条件索引极度精简 |
 
 <a id="24-分区与分片策略"></a>
@@ -432,7 +430,6 @@ GET /api/v1/notifications/:notification_id
         "status": "FAILED",
         "retry_count": 2,
         "last_error": "HTTP 503",
-        "next_retry_at": "2026-05-24T10:31:00Z",
         "created_at": "2026-05-24T10:30:01Z"
       }
     ]
@@ -1360,11 +1357,10 @@ handleRetry(task, msg, errorMsg):
   task.retryCount ← task.retryCount + 1
   nextDelay ← calculateBackoff(task.retryCount, task.retryPolicy)
 
-  // 更新 DB：记录重试信息（辅助查询，实际延迟由 MQ TTL 控制）
+  // 更新 DB：记录重试计数和错误信息（实际延迟等待由 MQ TTL 控制）
   更新投递任务 retry 信息(
     id: task.id,
     retryCount: task.retryCount,
-    nextRetryAt: now + nextDelay,
     lastError: errorMsg
   )
 
@@ -1795,7 +1791,7 @@ classDiagram
         +CreateDeliveryTasks(notificationId, vendorIds) DeliveryTask[]
         +GetDeliveryTask(id) DeliveryTask
         +UpdateDeliveryTaskStatus(id, status)
-        +UpdateDeliveryTaskRetry(id, retryCount, nextRetryAt, lastErr)
+        +UpdateDeliveryTaskRetry(id, retryCount, lastErr)
         +InsertDeadLetter(task, errMsg)
         +GetDeadLetterRecords(filter) DeadLetterRecord[]
         +RetryDeadLetter(id)
