@@ -1867,14 +1867,17 @@ main():
   waitSignal()
   logger.Info("收到退出信号，开始优雅关闭……")
 
-  // Step 8: 并发关闭各组件，超时 30s
-  // HTTP 和 Worker 独立，互不依赖，应同时触发关闭
+  // Step 8: 并发关闭 HTTP 和 Worker
+  // 两者关闭期间 MQ、DB 保持可用——正在处理的请求还需要写 DB 和发 MQ
   shutdownCtx ← 带超时的上下文(30s)
   并发执行:
     httpServer.Shutdown(shutdownCtx)  // 停止接收新请求，等待已到达的完成
-    workerPool.Stop(shutdownCtx)      // 停止消费新消息，等待当前投递完成
+    workerPool.Stop(shutdownCtx)      // 停止消费新 MQ 消息，等待当前投递完成
   等待所有关闭完成（或超时）
-  // MQ、DB 连接在各组件自身 Stop 中连带关闭
+
+  // Step 9: 两路均完成后，关闭底层连接
+  mq.Close()
+  db.Close()
 ```
 
 <a id="95-优雅关闭"></a>
@@ -1888,25 +1891,34 @@ sequenceDiagram
     participant Main as main()
     participant HTTP as HTTP Server
     participant WP as WorkerPool
+    participant MQ as RabbitMQ
+    participant DB as PostgreSQL
 
     OS->>Main: SIGTERM
-    Main->>HTTP: Shutdown()（异步）
-    Main->>WP: Stop()（异步）
-    Note over HTTP: 停止接收新请求<br/>等待进行中的请求完成(≤10s)
-    Note over WP: 停止消费新消息<br/>等待当前投递完成(≤30s)
-    par 并发执行
-        HTTP-->>Main: HTTP 关闭完成
+
+    par 并发执行两路独立关闭
+        Main->>HTTP: Shutdown()
+        Note over HTTP: 停止接收新请求<br/>等待进行中的请求完成(≤10s)<br/>此时 MQ、DB 仍可用
+        HTTP-->>Main: Done
     and
-        WP-->>Main: Worker 关闭完成
+        Main->>WP: Stop()
+        Note over WP: 停止消费新消息<br/>等待当前投递完成(≤30s)<br/>此时 DB 仍可用
+        WP-->>Main: Done
     end
+
+    Note over Main: 两路均完成，无活跃请求/投递
+
+    Main->>MQ: Close()
+    Main->>DB: Close()
     Main-->>OS: Exit(0)
 ```
 
 **关闭前保证**：
-1. HTTP 服务停止接收新请求，进行中的请求正常完成后关闭
-2. Worker 停止消费新 MQ 消息，当前正在处理的 HTTP 投递正常完成后关闭
-3. 未 ACK 的消息在连接断开后自动重新入队，重启后继续处理
-4. 关闭超时（默认 30s）后强制退出，未完成的消息由 MQ 自动重投
+1. HTTP 服务关闭期间 MQ、DB 连接保持可用——正在处理的请求仍需向 MQ 发送通知和写入 DB
+2. Worker 池关闭期间 DB 连接保持可用——正在投递的 Worker 仍需更新 delivery_tasks 状态
+3. 未 ACK 的 MQ 消息在连接断开后自动重新入队，重启后继续处理
+4. HTTP 和 Worker 均关闭后才关闭 MQ、DB 连接
+5. 关闭超时（默认 30s）后强制退出，未完成的消息由 MQ 自动重投
 
 ---
 
