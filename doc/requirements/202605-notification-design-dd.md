@@ -250,79 +250,44 @@ erDiagram
 
 #### 2.3.1 notifications 索引
 
-```sql
--- 幂等校验查询：按 (caller_id, idempotent_key) 唯一约束已有索引，无需额外创建
-
--- 按调用方查询通知列表（支持分页）
-CREATE INDEX idx_notifications_caller_id_created
-    ON notifications (caller_id, created_at DESC);
-
--- 按事件类型查询（运营分析）
-CREATE INDEX idx_notifications_event_type_created
-    ON notifications (event_type, created_at DESC);
-
--- 按状态查询（后台扫描/数据修复）
-CREATE INDEX idx_notifications_status_created
-    ON notifications (status, created_at)
-    WHERE status IN ('PENDING', 'DELIVERING');
-```
+| 用途 | 索引字段 | 为什么 |
+|------|---------|--------|
+| 幂等校验 | `(caller_id, idempotent_key)` 唯一约束 | 每次提交通知都需检查是否重复，这是最高频的查询路径。唯一约束自带索引，无需额外创建 |
+| 调用方列表查询 | `(caller_id, created_at DESC)` | 调用方查自己的通知列表，按时间倒序分页。复合索引让一次索引扫描即可完成排序+过滤，避免文件排序 |
+| 运营分析 | `(event_type, created_at DESC)` | 按事件类型统计/排查问题时走此索引。非高频路径，但数据量增长后全表扫描代价高，建索引成本可控 |
+| 后台扫描修复 | `(status, created_at)` 条件索引，仅 `PENDING / DELIVERING` | 后台任务扫描"还在处理中"的通知做超时补偿。条件索引缩小索引体积，且只有这两状态是扫描目标，完全命中 |
 
 #### 2.3.2 delivery_tasks 索引
 
-```sql
--- 按 notification_id 查询投递任务列表
-CREATE INDEX idx_delivery_tasks_notification_id
-    ON delivery_tasks (notification_id);
-
--- 按供应商与状态查询待重试任务
-CREATE INDEX idx_delivery_tasks_vendor_status_retry
-    ON delivery_tasks (vendor_id, status, next_retry_at)
-    WHERE status IN ('FAILED', 'DEAD_LETTER');
-
--- 按状态查询（后台重试扫描）
-CREATE INDEX idx_delivery_tasks_status
-    ON delivery_tasks (status, created_at)
-    WHERE status = 'PENDING';
-
--- 死信列表查询
-CREATE INDEX idx_delivery_tasks_dead_letter_vendor
-    ON delivery_tasks (vendor_id, created_at DESC)
-    WHERE status = 'DEAD_LETTER';
-```
+| 用途 | 索引字段 | 为什么 |
+|------|---------|--------|
+| 通知详情展示 | `(notification_id)` | 用户查通知详情时需列出所有关联的投递任务。`notification_id` 是 FK，查询频繁，索引必不可少 |
+| 待重试任务扫描 | `(vendor_id, status, next_retry_at)` 条件索引，仅 `FAILED / DEAD_LETTER` | Worker 需要找出已失败且到期的任务重试。条件索引只包含需要扫描的行，`next_retry_at` 支持范围查询"哪些到重试时间了" |
+| 新任务消费 | `(status, created_at)` 条件索引，仅 `PENDING` | Worker 扫描刚创建待处理的任务。条件索引只包含 `PENDING` 行，索引体积很小 |
+| 死信运营查询 | `(vendor_id, created_at DESC)` 条件索引，仅 `DEAD_LETTER` | 运维查某个供应商的死信情况时使用。`DEAD_LETTER` 是低频状态行，条件索引极度精简 |
 
 <a id="24-分区与分片策略"></a>
 ### 2.4 分区与分片策略
 
 #### 2.4.1 时间分区
 
-`delivery_tasks` 和 `dead_letter_records` 按时间分区策略：
+`delivery_tasks` 和 `dead_letter_records` 按 `created_at` 按月范围分区。
 
-```sql
--- delivery_tasks 月度分区（创建时即确定所属分区）
-CREATE TABLE delivery_tasks (
-    -- ...列定义如上...
-) PARTITION BY RANGE (created_at);
+**为什么分区对象选这两张表？**
+- `delivery_tasks` 和 `dead_letter_records` 是投递环节的核心表，写入量大且随运营时间持续增长
+- 这两张表有明确的保留周期（已完成/死信的分区到期可整区删除），分区让清理无需逐行 DELETE
 
-CREATE TABLE delivery_tasks_2026_05 PARTITION OF delivery_tasks
-    FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
-CREATE TABLE delivery_tasks_2026_06 PARTITION OF delivery_tasks
-    FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
--- ...每月预创建下月分区...
+**为什么按月而非按周或年？**
+- 周分区太碎：单分区行数少，跨月查询需扫描多个分区，反而退化
+- 年分区太大：数据量超过千万级别后索引维护和备份操作窗口过长
+- 月度是平衡点：单月数据量适中，且业务观察周期也以月为单位
 
--- dead_letter_records 同理
-CREATE TABLE dead_letter_records (
-    -- ...列定义如上...
-) PARTITION BY RANGE (created_at);
-```
+**分区维护**：
 
-**分区维护规则**：
-
-| 操作 | 周期 | 说明 |
-|------|------|------|
-| 预创建分区 | 每月 25 日 | 提前创建下月分区 |
-| 清理历史分区 | 每季度 | 删除超过保留周期（默认 90 天）的分区 |
-
-> **未来扩展**：`notifications` 表保留周期更长（默认 180 天），TBD 根据实际数据量决定是否分区。
+| 操作 | 周期 | 策略 | 为什么 |
+|------|------|------|--------|
+| 预创建 | 每月 25 日 | 提前创建下月分区 | 避免月底零点大批量写入时触发动建分区，引起写入抖动 |
+| 清理 | 每季度 | 删除超过保留周期（默认 90 天）的分区 | 直接 DROP PARTITION 而非 DELETE，秒级完成且不影响索引。`notifications` 表保留 180 天，TBD 根据数据量决定是否追加入分区方案 |
 
 #### 2.4.2 预分片设计
 
