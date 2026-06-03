@@ -1020,7 +1020,7 @@ flowchart TD
     subgraph CREATE_TASKS["创建 delivery_tasks"]
         LOAD["加载通知 & 路由规则"]
         VENDOR{"有匹配供应商？"}
-        CREATE["DB 逐一创建（幂等）"]
+        CREATE["DB 逐一创建 delivery_task"]
     end
 
     subgraph PUB["MQ 发布"]
