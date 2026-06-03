@@ -1079,9 +1079,9 @@ resolveSourceDirective(directive, ctx):
   // formatValue 根据 rawValue 的原始类型和 $format 推断转换方式：
   //   int + 日期格式     → 按 unix_s 时间戳解析后格式化
   //   string + 日期格式  → 按 ISO 8601 解析后格式化
-  //   int + "元"         → 按 cent_precision 分精度金额格式化
+  // $format 仅处理日期/时间格式转换（详见 HLD §5.3）
   // 不应先 toString(rawValue) 再传——那样会丢失类型信息，
-  // 导致 formatValue 无法区分 int 时间戳和数字字符串
+  // 导致 formatValue 无法区分 int 时间戳和日期字符串
   if directive 含有键 "$format":
     return formatValue(rawValue, directive["$format"])
 
