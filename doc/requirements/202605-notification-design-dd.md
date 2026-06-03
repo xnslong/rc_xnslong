@@ -817,20 +817,21 @@ Submit(request):
   // 同一 (caller_id, idempotent_key) 不会重复创建
   idempotentKey ← 取 request.idempotent_key，若未提供则自动生成 UUID()
 
-  (notificationId, isNew) ← 幂等插入通知记录(
+  notificationId ← 幂等插入通知记录(
     callerId: request.caller_id,
     eventType: request.event_type,
-    idempotentKey,
+    idempotentKey: idempotentKey,
     payload: request.payload
   )
 
-  // Step 3: 仅新创建的才触发 MQ，已有通知不重复触发
-  if isNew:
-    publishResult ← 向 MQ 发布触发消息(notificationId)
-    if publishResult 为失败:
-      // MQ 发布失败不影响返回——通知已在 DB 持久化
-      // 调用方可持 idempotent_key 重试，幂等语义保证不会重复创建
-      记录警告日志("MQ publish failed", notificationId)
+  // Step 3: 将通知发往 MQ 触发通道，由路由分发器消费后创建投递任务
+  // 幂等重试时可能前次 MQ 未投出，无条件重发
+  // MQ 重复消息安全——路由分发器按 notification_id 幂等处理
+  publishResult ← 向 MQ 投递触发通知(notificationId)
+  if publishResult 为失败:
+    // MQ 发布失败不影响返回——通知已在 DB 持久化
+    // 调用方可持 idempotent_key 重试，幂等语义保证不会重复创建
+    记录警告日志("MQ publish failed", notificationId)
 
   响应 ← { notificationId: notificationId, status: "PENDING" }
   return 响应
@@ -1779,7 +1780,7 @@ classDiagram
 classDiagram
     class DBClient {
         <<interface>>
-        +UpsertNotification(params) (notificationId, isNew)
+        +UpsertNotification(params) notificationId
         +GetNotification(id) Notification
         +GetNotificationPayload(id) Payload
         +UpdateNotificationStatus(id, status)
