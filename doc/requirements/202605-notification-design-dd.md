@@ -1780,7 +1780,7 @@ classDiagram
 classDiagram
     class DBClient {
         <<interface>>
-        +UpsertNotification(params) notificationId
+        +UpsertNotification(params) (notificationId, isNew)
         +GetNotification(id) Notification
         +GetNotificationPayload(id) Payload
         +UpdateNotificationStatus(id, status)
@@ -1867,11 +1867,14 @@ main():
   waitSignal()
   logger.Info("收到退出信号，开始优雅关闭……")
 
-  // Step 8: 逆序关闭各组件，超时 30s
+  // Step 8: 并发关闭各组件，超时 30s
+  // HTTP 和 Worker 独立，互不依赖，应同时触发关闭
   shutdownCtx ← 带超时的上下文(30s)
-  workerPool.Stop(shutdownCtx)
-  httpServer.Shutdown(shutdownCtx)
-  // MQ、DB 连接在各组件的 Stop 方法中连带关闭
+  并发执行:
+    httpServer.Shutdown(shutdownCtx)  // 停止接收新请求，等待已到达的完成
+    workerPool.Stop(shutdownCtx)      // 停止消费新消息，等待当前投递完成
+  等待所有关闭完成（或超时）
+  // MQ、DB 连接在各组件自身 Stop 中连带关闭
 ```
 
 <a id="95-优雅关闭"></a>
@@ -1885,21 +1888,17 @@ sequenceDiagram
     participant Main as main()
     participant HTTP as HTTP Server
     participant WP as WorkerPool
-    participant MQ as RabbitMQ
-    participant DB as PostgreSQL
 
     OS->>Main: SIGTERM
-    Main->>HTTP: Shutdown()
+    Main->>HTTP: Shutdown()（异步）
+    Main->>WP: Stop()（异步）
     Note over HTTP: 停止接收新请求<br/>等待进行中的请求完成(≤10s)
-    HTTP-->>Main: Done
-
-    Main->>WP: Stop()
     Note over WP: 停止消费新消息<br/>等待当前投递完成(≤30s)
-    WP->>MQ: 手动 ACK 已完成的消息
-    WP-->>Main: Done
-
-    Main->>MQ: Close()
-    Main->>DB: Close()
+    par 并发执行
+        HTTP-->>Main: HTTP 关闭完成
+    and
+        WP-->>Main: Worker 关闭完成
+    end
     Main-->>OS: Exit(0)
 ```
 
