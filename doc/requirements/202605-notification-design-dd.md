@@ -260,7 +260,6 @@ erDiagram
 | 用途 | 索引字段 | 为什么 |
 |------|---------|--------|
 | 通知详情展示 | `(notification_id)` | 用户查通知详情时需列出所有关联的投递任务。`notification_id` 是 FK，查询频繁，索引必不可少 |
-| 新任务消费 | `(status, created_at)` 条件索引，仅 `PENDING` | Worker 从队列取消息后需加载 task 信息。条件索引只包含 `PENDING` 行，索引体积很小 |
 | 死信运营查询 | `(vendor_id, created_at DESC)` 条件索引，仅 `DEAD_LETTER` | 运维查某个供应商的死信情况时使用。`DEAD_LETTER` 是低频状态行，条件索引极度精简 |
 
 <a id="24-分区与分片策略"></a>
