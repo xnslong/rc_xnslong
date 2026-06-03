@@ -615,7 +615,7 @@ flowchart TB
 | **审计追溯** | ★★★★☆ DB 审计日志（字段级） | ★★★★☆ 版本历史 | ☆☆☆☆☆ 无 | ★★★★★ Git commit 全历史 + blame + diff |
 | **变更审批** | ☆☆☆☆☆ 无（API 直写即生效） | ☆☆☆☆☆ 无 | ☆☆☆☆☆ 无 | ★★★★★ PR/MR + Code Review + CI 校验 |
 | **回滚能力** | ★★★☆☆ 反向修改 | ★★★★☆ 版本回退 | ★☆☆☆☆ 手动复原 | ★★★★★ git revert，原子回滚 |
-| **机密管理** | ★★★★★ DB 天然存储 | ★★★★★ 天然存储 | ★★☆☆☆ 文件明文不安全 | ★★★★☆ 引用 `${secret:key}`，SecretStore 可替换实现 |
+| **机密管理** | ★★★★★ DB 天然存储 | ★★★★★ 天然存储 | ★★☆☆☆ 文件明文不安全 | ★★★★☆ 引用 `@{secret:key}`，SecretStore 可替换实现 |
 | **多实例支持** | ★★★★★ 好 | ★★★★★ 好 | ★☆☆☆☆ 差 | ★★★★☆ 好（需兜底轮询补偿 Webhook 丢事件） |
 | **运维负担** | ★★★★★ 低 | ★★★☆☆ 中 | ★★★★★ 极低 | ★★★★☆ 低-中（需管理 Git 凭据 + SecretStore） |
 | **适用场景** | 通用场景（初始阶段可选用） | 已有配置中心 | 开发/单机 | **标准推荐（选定方案）** |
@@ -668,7 +668,7 @@ vendors/{vendor}/                    # 供应商配置，由供应商维护者�
   {biz}/{biz_event}.yaml             #   投递契约 + 控制条件
 ```
 
-- **机密分离**：API Key / Secret Token 不进入 Git，由 `${secret:key}` 引用，启动时通过 SecretStore 注入
+- **机密分离**：API Key / Secret Token 不进入 Git，由 `@{secret:key}` 引用，启动时通过 SecretStore 注入
 
 #### 变更管控
 
@@ -970,24 +970,24 @@ flowchart TB
 
 **映射方式**：结构化映射 + 插件，分层组合。
 
-**结构化映射**是标准方式，以 YAML 配置直接描述目标请求。配置结构镜像目标 JSON 的层级，字段值通过 `@{payload.field}` 从事件数据取值：
+**结构化映射**是标准方式，以 YAML 配置直接描述目标请求。配置结构镜像目标 JSON 的层级，字段值通过统一引用语法 `@{scope:path}` 从不同数据源取值——`@{payload:order_id}` 从通知数据取，`@{item:name}` 从 `$each` 当前元素取，`@{secret:api_token}` 从 SecretStore 取。
 
 ```yaml
 body:
   type: mapping
   template:
-    user_id: "@{payload.user_id}"
+    user_id: "@{payload:user_id}"
     event: "register"
     properties:
       lifecyclestage: "customer"
-      last_paid_date: "@{payload.paid_at}"
+      last_paid_date: "@{payload:paid_at}"
 ```
 
 当供应商期望的格式与数据契约中的原始精度不同时（如 Schema 声明 `paid_at` 是秒级时间戳，但供应商要求 `yyyy-MM-dd`），引擎关键字使用 `$` 前缀，区分指令和输出字段名：
 
 ```yaml
 last_paid_date:
-  $source: "@{payload.paid_at}"    # 引擎关键字，从此字段取值
+  $source: "@{payload:paid_at}"    # 引擎关键字，从此字段取值
   $format: "yyyy-MM-dd"            # 引擎关键字，转换为此格式
 ```
 
@@ -995,34 +995,34 @@ last_paid_date:
 
 ```yaml
 count:
-  $source: "@{payload.count}"      # payload 中是 "42"（string）
+  $source: "@{payload:count}"      # payload 中是 "42"（string）
   $type: integer                   # 强制转为 42（integer）
 ```
 
 无 `$type` 时保持 payload 原始类型。非法转换（如 `"abc"` → integer）返回错误，拒绝构造请求。
 
-> 引擎关键字以 `$` 前缀标识。不加 `$` 前缀的 key 即为输出字段名，即使叫 `source`、`format`、`type` 也不产生冲突。`$input` 通常从 Schema 的 `x-format` 自动推导，仅当需要覆盖 Schema 声明时手写。若输出字段名恰好以 `$` 开头（如 `$source`），用 `$$` 前缀表示字面量：`$$source` → 输出字段 `$source`。引擎关键字包括：`$source`（取值来源）、`$format`（格式转换）、`$type`（类型转换）、`$each`（数组遍历）。其中前三个作用于单值字段，`$each` 作用于数组级字段。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素。
+> **引用语法**：统一使用 `@{scope:path}` 从外部数据源取值——`@{payload:order_id}`（通知数据）、`@{item:name}`（当前数组元素）、`@{secret:api_token}`（机密存储）。scope 标识数据源，path 是 scope 内的字段路径。`$` 前缀用于引擎关键字（`$source`、`$format`、`$type`、`$each`），与引用语法互补。不加 `$` 前缀的 key 即为输出字段名，即使叫 `source`、`format`、`type` 也不产生冲突。若输出字段名恰好以 `$` 开头（如 `$source`），用 `$$` 前缀表示字面量：`$$source` → 输出字段 `$source`。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素。
 
 **数组遍历**：当源数据为数组，目标也需要以数组组织时，存在两种表达方案。先并列展示两种写法及其输出，再对比取舍。
 
 **方案一：关键字块式（`$each`）✅ 采用**
 ```yaml
 items:
-  $source: "@{payload.product_list}"
+  $source: "@{payload:product_list}"
   $each:
-    product_id: "@{item.product_id}"
-    quantity: "@{item.qty}"
-    location: "@{item.warehouse}"
+    product_id: "@{item:product_id}"
+    quantity: "@{item:qty}"
+    location: "@{item:warehouse}"
 ```
 输出（唯一确定）：`items = [{product_id: "p1", quantity: 3, location: "SH"}, ...]`
 
-`$each` 会遍历 `$source` 指定的数组，对每个元素执行块内的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素——`@{item.product_id}` 表示"取当前元素的 product_id 字段"。
+`$each` 会遍历 `$source` 指定的数组，对每个元素执行块内的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素——`@{item:product_id}` 表示"取当前元素的 product_id 字段"。`@{payload:*}` 在 `$each` 块内同样可用，指向原始通知数据。
 
 **方案二：路径通配符（`[*]`）❌ 未采用**
 ```yaml
-items[].product_id: "@{payload.product_list[*].product_id}"
-items[].quantity: "@{payload.product_list[*].qty}"
-items[].location: "@{payload.product_list[*].warehouse}"
+items[].product_id: "@{payload:product_list[*].product_id}"
+items[].quantity: "@{payload:product_list[*].qty}"
+items[].location: "@{payload:product_list[*].warehouse}"
 ```
 输出（有歧义——以下两种理解都有合理解释空间）：
 - 理解 A（对象数组）：`items = [{product_id: "p1", quantity: 3, location: "SH"}, ...]`
@@ -1069,7 +1069,7 @@ mappings/crm_system/
 # vendors/crm_system.yaml（签名段，与 request 平级）
 sign:
   type: hmac-sha256
-  secret: "${secret:crm/signing_key}"
+  secret: "@{secret:crm/signing_key}"
   include:
     - body
     - timestamp
@@ -1111,7 +1111,7 @@ sign:
 # 模式一：MD5(body) → Sign header（库存系统）
 sign:
   type: md5
-  secret: "${secret:inventory/signing_key}"
+  secret: "@{secret:inventory/signing_key}"
   include:
     - body
   header: "Sign"
@@ -1119,7 +1119,7 @@ sign:
 # 模式二：HMAC-SHA256(body + timestamp) → X-Signature header
 sign:
   type: hmac-sha256
-  secret: "${secret:ad/signing_key}"
+  secret: "@{secret:ad/signing_key}"
   include:
     - body
     - timestamp
@@ -1129,7 +1129,7 @@ sign:
 # 通配符 header: "X-*" 表示所有以 X- 开头的 Header 参与签名
 sign:
   type: hmac-sha256
-  secret: "${secret:crm/signing_key}"
+  secret: "@{secret:crm/signing_key}"
   include:
     - body
     - timestamp
@@ -1140,7 +1140,7 @@ sign:
 # 模式四：HMAC-SHA256(body + timestamp) → Authorization: HMAC key:signature
 sign:
   type: hmac-sha256
-  secret: "${secret:crm/signing_key}"
+  secret: "@{secret:crm/signing_key}"
   include:
     - body
     - timestamp
@@ -1163,13 +1163,13 @@ sign:
 
 ```yaml
 last_paid_date:
-  source: "@{payload.paid_at}"
+  source: "@{payload:paid_at}"
   format: "yyyy-MM-dd"
 created_at:
-  source: "@{payload.created_at}"
+  source: "@{payload:created_at}"
   format: "iso8601"
 count:
-  source: "@{payload.total_count}"
+  source: "@{payload:total_count}"
   format: "string"
 # sign 在供应商配置顶层，与 request 平级，引擎在请求构造完成后执行
 ```
@@ -1590,7 +1590,7 @@ flowchart LR
 | 需求 | 设计响应 | 对应章节 |
 |------|---------|---------|
 | **调用方鉴权** | API Key 鉴权，接收网关校验调用方身份。MVP 后可演进为 HMAC 签名 | §5.1 接收网关 |
-| **凭证安全** | 供应商鉴权凭证不进入 Git，通过 `${secret:key}` 引用，SecretStore 运行时注入 | §4.4 机密分离 |
+| **凭证安全** | 供应商鉴权凭证不进入 Git，通过 `@{secret:key}` 引用，SecretStore 运行时注入 | §4.4 机密分离 |
 | **审计日志** | 配置变更通过 Git commit 全历史追溯 + approve 记录；死信操作通过 Admin API 审计 | §4.4 角色治理（可追溯） |
 
 ### 7.7 可维护性
@@ -1836,13 +1836,13 @@ test/
 **问题**：结构化映射的配置语法如何定义，事件类型的数据契约如何约定。
 
 **关注点**：
-- **字段引用应该用 Go Template 语法还是自定义 `@{payload.field}` 语法？**：`{{ .payload.field }}` 是表达式求值语法——它不仅意味着"获取这个值"，还意味着"可以写任意表达式"。配置作者会在映射中用 `{{ if }}`、`{{ with }}`、管道函数链。一旦开启这个口子，配置就会从数据变成代码（见 A.3 的同一问题）。而 `@{payload.field}` 是一个纯引用标记——它唯一能做的事情就是告诉引擎"从 payload 的指定路径取值放到这里"。引擎看到 `@{...}` 能做的事情是限定的、确定的、可验证的。这种"语法级别的约束"比"规则文档中的约定"要可靠得多——约定可以被打破，语法约束不能。
+- **字段引用应该用 Go Template 语法还是自定义 `@{payload:field}` 语法？**：`{{ .payload.field }}` 是表达式求值语法——它不仅意味着"获取这个值"，还意味着"可以写任意表达式"。配置作者会在映射中用 `{{ if }}`、`{{ with }}`、管道函数链。一旦开启这个口子，配置就会从数据变成代码（见 A.3 的同一问题）。而 `@{payload:field}` 是一个纯引用标记——它唯一能做的事情就是告诉引擎"从 payload 的指定路径取值放到这里"。引擎看到 `@{...}` 能做的事情是限定的、确定的、可验证的。这种"语法级别的约束"比"规则文档中的约定"要可靠得多——约定可以被打破，语法约束不能。
 - **时间戳格式多样（unix_s/unix_ms/ISO 8601），Schema 如何准确表达这些差异？**：`paid_at: 1736870400` 这个字段，上游业务方可能传 unix seconds，也可能传 unix milliseconds（1736870400000），还可能传 ISO 8601 字符串。从 JSON Schema 的 `type: integer` 上完全无法区分。如果映射引擎直接把这个整数塞到供应商 API 的 body 里，供应商可能解析出错误的时间（差 1000 倍）。`x-format` 扩展就是在 Schema 层面标注"这个 integer 实际上是 unix_s 还是 unix_ms"，让引擎在映射时可以自动转换。这不仅仅是"格式提示"，而是防止静默数据错误的关键机制。
-- **配置语法（怎么取值）和数据契约（输入结构定义）是同一问题还是不同问题？**：最初配置语法和 Schema 定义是分开讨论的。但在讨论中意识到：配置中 `@{payload.field}` 引用的字段名，和 Schema 中定义的字段名，本质上是同一套命名体系。如果分开描述，配置作者需要同时查阅两处文档才能理解一条映射的含义。合并为完整的"数据契约 + 映射规则"描述后，Schema 定义了"有什么字段"，配置定义了"字段怎么映射到供应商请求"，两者互相补充，共同构成一个完整的配置画面。
+- **配置语法（怎么取值）和数据契约（输入结构定义）是同一问题还是不同问题？**：最初配置语法和 Schema 定义是分开讨论的。但在讨论中意识到：配置中 `@{payload:field}` 引用的字段名，和 Schema 中定义的字段名，本质上是同一套命名体系。如果分开描述，配置作者需要同时查阅两处文档才能理解一条映射的含义。合并为完整的"数据契约 + 映射规则"描述后，Schema 定义了"有什么字段"，配置定义了"字段怎么映射到供应商请求"，两者互相补充，共同构成一个完整的配置画面。
 
-**哲学**：语法级别的约束比文档约定更可靠。`@{payload.field}` 的语法限制不是缺陷，而是保护——它保证配置不会退化未代码。格式信息从 Schema 自动推导，减少人为错误。
+**哲学**：语法级别的约束比文档约定更可靠。`@{payload:field}` 的语法限制不是缺陷，而是保护——它保证配置不会退化未代码。格式信息从 Schema 自动推导，减少人为错误。
 
-**结论**：`@{payload.field}` 引用语法 + JSON Schema + `x-format` 扩展。
+**结论**：`@{payload:field}` 引用语法 + JSON Schema + `x-format` 扩展。
 
 ---
 
@@ -1978,7 +1978,7 @@ test/
 
 - **遍历关键词选 `$iterate_elem`、`$map`、`$each` 还是 `$for`？**：`$iterate_elem` 编程术语味重（iterate），非开发者不易理解；`$map` 是函数式编程概念，同样不直观；`$for` 语义不完整（for 通常配 in——for x in list，单独一个 `$for` 缺宾语）；`$each` 是自然语言"对每个元素"，语义自明。"从 product_list 取值，对**每个**元素做以下映射"——`$source` + `$each` 读起来通顺。
 
-- **当前元素引用名选 `elem`、`item` 还是 `this`？**：`elem` 是 element 的缩写，非配置领域常用词；`this` 在配置语境中容易和面向对象混淆；`item` 是自然语言——"数组中的每个 item"，在配置中读起来最直观。`@{item.product_id}` 语义自明：item 即当前元素，取其中的 product_id。`item` 作为保留关键字，在 `$each` 块内唯一地指向当前遍历到的数组元素。
+- **当前元素引用名选 `elem`、`item` 还是 `this`？**：`elem` 是 element 的缩写，非配置领域常用词；`this` 在配置语境中容易和面向对象混淆；`item` 是自然语言——"数组中的每个 item"，在配置中读起来最直观。`@{item:product_id}` 语义自明：item 即当前元素，取其中的 product_id。`item` 作为保留关键字，在 `$each` 块内唯一地指向当前遍历到的数组元素。
 
 **哲学**：配置语法的第一原则是"所见即所得"——看到配置就能直接推断输出，不需要在心里"编译"一次。歧义是配置语法的红线，不可接受。新关键字应遵循已有语法体系中已建立的使用模式，不引入例外规则。
 

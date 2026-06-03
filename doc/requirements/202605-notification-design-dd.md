@@ -641,7 +641,7 @@ enabled: true
 
 request:
   method: PATCH
-  url: "https://crm.company.com/api/v3/contacts/@{payload.user_id}"
+  url: "https://crm.company.com/api/v3/contacts/@{payload:user_id}"
   headers:
     Content-Type: "application/json"
     Accept: "application/json"
@@ -675,7 +675,7 @@ retry_policy:
 event_type: "order.paid"
 request:
   method: PATCH
-  url: "https://crm.company.com/api/v3/contacts/@{payload.user_id}"
+  url: "https://crm.company.com/api/v3/contacts/@{payload:user_id}"
   headers:
     Content-Type: "application/json"
     X-Source: "notification-system"
@@ -685,34 +685,34 @@ request:
       properties:
         lifecyclestage: "customer"
         last_paid_date:
-          $source: "@{payload.paid_at}"
+          $source: "@{payload:paid_at}"
           $format: "yyyy-MM-dd"
-        total_revenue: "@{payload.amount}"   # 金额，单位分（供应商按分理解）
+        total_revenue: "@{payload:amount}"   # 金额，单位分（供应商按分理解）
         count:
-          $source: "@{payload.count}"        # payload 中是 "42"（string）
+          $source: "@{payload:count}"        # payload 中是 "42"（string）
           $type: integer                     # 强制转为 42（integer）
         items:                               # 数组字段：遍历 product_list 生成
-          $source: "@{payload.product_list}"
+          $source: "@{payload:product_list}"
           $each:
-            product_id: "@{item.product_id}"
-            quantity: "@{item.qty}"
-            location: "@{item.warehouse}"
+            product_id: "@{item:product_id}"
+            quantity: "@{item:qty}"
+            location: "@{item:warehouse}"
 ```
 
 **映射语法完整参考**：
 
 | 语法 | 示例 | 说明 |
 |------|------|------|
-| `@{payload.field}` | `@{payload.order_id}` | 从 payload 取值 |
-| `@{payload.a.b.c}` | `@{payload.user.address.city}` | 嵌套路径访问 |
-| `@{item.field}` | `@{item.product_id}` | 从 `$each` 遍历的当前元素取值 |
-| `@{item.a.b}` | `@{item.user.address.city}` | 当前元素的嵌套路径访问 |
+| `@{payload:field}` | `@{payload:order_id}` | 从 payload 取值 |
+| `@{payload:a.b.c}` | `@{payload:user.address.city}` | 嵌套路径访问 |
+| `@{item:field}` | `@{item:product_id}` | 从 `$each` 遍历的当前元素取值 |
+| `@{item:a.b}` | `@{item:user.address.city}` | 当前元素的嵌套路径访问 |
 | `"static_value"` | `"customer"` | 静态字符串 |
 | `123` | `29900` | 静态数字 |
-| `$source` | `$source: "@{payload.paid_at}"` | 引擎关键字：取值来源 |
+| `$source` | `$source: "@{payload:paid_at}"` | 引擎关键字：取值来源 |
 | `$format` | `$format: "yyyy-MM-dd"` | 引擎关键字：格式转换 |
 | `$type` | `$type: "integer"` | 引擎关键字：强制类型转换。无 `$type` 则保持 payload 原始类型 |
-| `$each` | `$each:` 后接元素映射块 | 引擎关键字：数组遍历。配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义每个元素的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素，通过 `@{item.field}` 引用其字段 |
+| `$each` | `$each:` 后接元素映射块 | 引擎关键字：数组遍历。配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义每个元素的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素，通过 `@{item:field}` 引用其字段 |
 
 **DeliverySpec 组合**：MappingConfig 和 ResponseJudgment 按 `(vendor_id, event_type)` 组合为 DeliverySpec（投递契约），由 ConfigLoader 统一返回。Judgment 可选，非 nil 时覆盖供应商级别的默认判决规则。详见 §9.3.1。
 
@@ -720,7 +720,7 @@ request:
 
 | 场景 | 处理 | 示例 |
 |------|------|------|
-| `$source` | 引擎关键字，表示取值来源 | `$source: "@{payload.paid_at}"` |
+| `$source` | 引擎关键字，表示取值来源 | `$source: "@{payload:paid_at}"` |
 | `$format` | 引擎关键字，表示格式转换 | `$format: "yyyy-MM-dd"` |
 | `$type` | 引擎关键字，表示强制类型转换 | `$type: "string"`，可选值: `string` / `integer` / `number` / `boolean` |
 | `$$field_name` | 转义为字面量 `$field_name` | `$$dollar_value: "test"` → 输出 `{"$dollar_value": "test"}` |
@@ -751,19 +751,19 @@ rules:
 <a id="46-机密引用语法"></a>
 ### 4.6 机密引用语法（未来扩展）
 
-> MVP 直接在配置文件中写明文值。本节的 `${secret:path}` 语法是第二阶段 Git + SecretStore 方案的格式预留。
+> MVP 直接在配置文件中写明文值。本节的 `@{secret:path}` 语法是第二阶段 Git + SecretStore 方案的格式预留。
 
 ```yaml
 # 第二阶段：Git + SecretStore 方案中的机密引用
 auth:
   config:
-    token: "${secret:crm/api_token}"
-    api_key: "${secret:ad_platform/api_key}"
+    token: "@{secret:crm/api_token}"
+    api_key: "@{secret:ad_platform/api_key}"
 ```
 
-**引用路径规范**：`${secret:<path>}`，其中 `<path>` 为 SecretStore 中的键路径。
+**引用路径规范**：`@{secret:<path>}`，其中 `<path>` 为 SecretStore 中的键路径。与数据引用语法 `@{payload:*}`、`@{item:*}` 统一为 `@{scope:path}` 格式。
 
-**解析流程**：ConfigLoader 在加载 YAML 后，扫描所有 `${secret:...}` 引用，调用 SecretStore.Resolve() 替换为实际值。
+**解析流程**：ConfigLoader 在加载 YAML 后，扫描所有 `@{secret:...}` 引用，调用 SecretStore.Resolve() 替换为实际值。
 
 ---
 
@@ -970,7 +970,7 @@ BuildRequest(vendor, mapping, payload):
   ctx ← {payload: payload}
 
   // Step 1: 解析 URL——用 resolveField 将 @{} 引用替换为实际值并拼接为字符串
-  // 例如 "https://crm.com/@{payload.user_id}" → "https://crm.com/u_12345"
+  // 例如 "https://crm.com/@{payload:user_id}" → "https://crm.com/u_12345"
   // URL 中通常是混合模板（前缀+引用），resolveField 自动拼接为字符串
   resolvedUrl ← resolveField(mapping.request.url, ctx)
 
@@ -1067,7 +1067,7 @@ resolveSourceDirective(directive, ctx):
   // resolveField 通过 ctx[scope] 定位数据源：
   //   ctx["payload"] → 原始通知数据
   //   ctx["item"]    → $each 当前元素（$each 外不存在）
-  // 纯引用 "@{payload.amount}" → 保持 int/bool 原始类型
+  // 纯引用 "@{payload:amount}" → 保持 int/bool 原始类型
   // 混合模板 "prefix_@{field}" → 全部转为字符串拼接
   rawValue ← resolveField(directive["$source"], ctx)
 
@@ -1092,14 +1092,14 @@ resolveField(expr, ctx):
   // ctx 是统一的数据上下文容器：
   //   ctx["payload"] → 原始通知数据
   //   ctx["item"]    → $each 当前元素（仅在 $each 块内存在）
-  //   @{scope.path}  → ctx[scope] 中按 path 取值
+  //   @{scope:path}  → ctx[scope] 中按 path 取值
   //
   // 返回行为取决于表达式写法：
 
   expr 不包含任何 @{} 引用:
     return expr 原值（纯静态字符串）
 
-  expr 是纯引用形式 "@{payload.amount}"（一个 @{} 且无前后缀）:
+  expr 是纯引用形式 "@{payload:amount}"（一个 @{} 且无前后缀）:
     // 保持 int/bool/number 的原始类型，不自动转字符串
     // 目的是让后续的 convertType 能基于原始类型做转换
     scope ← 提取引用标识（"payload" 或 "item"）
@@ -1125,8 +1125,8 @@ resolveEachDirective(directive, ctx):
   // ctx 传入时为 {payload: 原始通知}，遍历每个元素时扩展为
   // {payload: 原始通知, item: 当前元素}，传递给嵌套的 resolveNode
   //
-  // @{payload.xxx} 仍解析到 ctx.payload（原始通知字段）
-  // @{item.xxx}    解析到 ctx.item（当前遍历元素字段）
+  // @{payload:xxx} 仍解析到 ctx.payload（原始通知字段）
+  // @{item:xxx}    解析到 ctx.item（当前遍历元素字段）
   // 两者通过键名隔离，永不冲突
   //
   // 内部使用：
@@ -2093,7 +2093,7 @@ graph TD
 
 - **resolveSourceDirective 和 resolveEachDirective 为什么不能是独立入口**（设计语义与代码结构的一致性）：设计上 `$source` 的语义是"对这个数据要做特殊处理了"，然后才根据其他键决定具体做什么处理（单值提取 + `$type`/`$format`，或 `$each` 数组遍历）。因此代码结构应该以 `$source` 为统一入口，内部按 `$each` 等键分派具体策略。原始设计在 `resolveNode` 中分别判断 `$each` 和 `$source` 键分派给两个独立算法，导致代码的控制流和设计语义打架——读者脑子里同时有两套逻辑在冲突：一套是实现的调度分支，一套是业务的 `$source` 入口语义。保证两者一致性，是在正确性之上更应保证的——不一致的代码，即使正确，也难以推导和验证。
 
-- **数据上下文应该怎么设计以防止命名冲突**（命名空间隔离）：`$each` 遍历时需要同时暴露原始 payload 和当前数组元素给 `resolveField`。原始设计通过深拷贝后再 merge `item` 键实现，但 payload 本身也可能含有名为 `item` 的字段——merge 后 `@{payload.item}` 指向了数组元素而非原始值。虽然实践中 payload 中名为 `item` 的字段极少，但设计上这是个隐患。改进为 `ctx = {payload: 原始通知}` 的统一数据容器，`@{xxx.yyy}` 即 `ctx[xxx][yyy]`。`$each` 内扩展为 `{...ctx, item: 当前元素}`，payload 和 item 通过键名隔离。这种设计还能低成本支持未来扩展，如 `@{global.env}`。
+- **数据上下文应该怎么设计以防止命名冲突**（命名空间隔离）：`$each` 遍历时需要同时暴露原始 payload 和当前数组元素给 `resolveField`。原始设计通过深拷贝后再 merge `item` 键实现，但 payload 本身也可能含有名为 `item` 的字段——merge 后 `@{payload:item}` 指向了数组元素而非原始值。虽然实践中 payload 中名为 `item` 的字段极少，但设计上这是个隐患。改进为 `ctx = {payload: 原始通知}` 的统一数据容器，`@{xxx.yyy}` 即 `ctx[xxx][yyy]`。`$each` 内扩展为 `{...ctx, item: 当前元素}`，payload 和 item 通过键名隔离。这种设计还能低成本支持未来扩展，如 `@{global.env}`。
 
 **哲学**：
 - 职责有重叠的两个算法，如果其中一个在特定参数下可完全退化为另一个的行为，则应该合并。让调用者根据场景"凭经验隐式选择"是设计不干净的表现。
