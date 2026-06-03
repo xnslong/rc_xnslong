@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,6 +72,14 @@ type vendorResponseRuleItem struct {
 	ExpectedStatus int    `yaml:"expected_status"`
 }
 
+// eventSchemaFile is the YAML representation of an event schema file.
+type eventSchemaFile struct {
+	EventType   string         `yaml:"event_type"`
+	Description string         `yaml:"description"`
+	Version     int            `yaml:"version"`
+	Schema      map[string]any `yaml:"schema"`
+}
+
 // ---- Loader ----
 
 // Loader implements port.ConfigProvider by loading configuration from YAML files.
@@ -83,6 +92,7 @@ type Loader struct {
 	routingRules   []port.RoutingRule
 	vendorConfigs  map[string]*port.VendorConfig
 	mappingConfigs map[string]*port.MappingConfig // key: "vendorID/eventType"
+	eventSchemas   map[string][]byte              // key: eventType
 }
 
 // NewLoader creates a new config loader for the given config file or directory paths.
@@ -91,6 +101,7 @@ func NewLoader(paths ...string) (*Loader, error) {
 		paths:          paths,
 		vendorConfigs:  make(map[string]*port.VendorConfig),
 		mappingConfigs: make(map[string]*port.MappingConfig),
+		eventSchemas:   make(map[string][]byte),
 	}, nil
 }
 
@@ -149,6 +160,22 @@ func (l *Loader) loadDir(dir string) error {
 	mappingsDir := filepath.Join(dir, "mappings")
 	if info, err := os.Stat(mappingsDir); err == nil && info.IsDir() {
 		if err := l.loadMappingsDir(mappingsDir); err != nil {
+			return err
+		}
+	}
+
+	// Load event schemas from event_schemas/ (flat structure).
+	schemasDir := filepath.Join(dir, "event_schemas")
+	if info, err := os.Stat(schemasDir); err == nil && info.IsDir() {
+		if err := l.loadFlatEventSchemas(schemasDir); err != nil {
+			return err
+		}
+	}
+
+	// Load event schemas from events/{biz}/events/ (DD §4.1 hierarchical structure).
+	eventsDir := filepath.Join(dir, "events")
+	if info, err := os.Stat(eventsDir); err == nil && info.IsDir() {
+		if err := l.loadHierarchicalEventSchemas(eventsDir); err != nil {
 			return err
 		}
 	}
@@ -305,6 +332,92 @@ func (l *Loader) loadMappingFile(path, vendorID string) error {
 	return nil
 }
 
+// loadFlatEventSchemas loads schema YAML files from a flat directory.
+// Each file is named {event_type}.yaml containing an eventSchemaFile.
+func (l *Loader) loadFlatEventSchemas(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("reading event schemas dir %q: %w", dir, err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+
+		path := filepath.Join(dir, entry.Name())
+		if err := l.loadEventSchemaFile(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// loadHierarchicalEventSchemas loads schema YAML files from events/{biz}/events/.
+func (l *Loader) loadHierarchicalEventSchemas(dir string) error {
+	bizEntries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("reading events dir %q: %w", dir, err)
+	}
+
+	for _, bizEntry := range bizEntries {
+		if !bizEntry.IsDir() {
+			continue
+		}
+
+		eventsDir := filepath.Join(dir, bizEntry.Name(), "events")
+		if info, err := os.Stat(eventsDir); err != nil || !info.IsDir() {
+			continue
+		}
+
+		schemaEntries, err := os.ReadDir(eventsDir)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", eventsDir, err)
+		}
+
+		for _, entry := range schemaEntries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+				continue
+			}
+
+			path := filepath.Join(eventsDir, entry.Name())
+			if err := l.loadEventSchemaFile(path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// loadEventSchemaFile parses a single event schema YAML file and stores it.
+func (l *Loader) loadEventSchemaFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading file %q: %w", path, err)
+	}
+
+	var sf eventSchemaFile
+	if err := yaml.Unmarshal(data, &sf); err != nil {
+		return fmt.Errorf("parsing schema file %q: %w", path, err)
+	}
+
+	if sf.EventType == "" || sf.Schema == nil {
+		return fmt.Errorf("invalid schema file %q: missing event_type or schema", path)
+	}
+
+	schemaJSON, err := json.Marshal(sf.Schema)
+	if err != nil {
+		return fmt.Errorf("marshaling schema %q: %w", path, err)
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.eventSchemas[sf.EventType] = schemaJSON
+
+	return nil
+}
+
 // parseDurationToMs parses a Go duration string and returns milliseconds.
 func parseDurationToMs(s string) (int, error) {
 	d, err := time.ParseDuration(s)
@@ -412,4 +525,13 @@ func (l *Loader) GetRoutingRules(eventType string) []port.RoutingRule {
 		}
 	}
 	return result
+}
+
+// GetEventSchema returns the JSON schema definition for the given event type.
+func (l *Loader) GetEventSchema(eventType string) ([]byte, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	schema, ok := l.eventSchemas[eventType]
+	return schema, ok
 }

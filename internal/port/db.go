@@ -23,5 +23,7 @@ type DBClient interface {
 	GetDeliveryTaskCounts(ctx context.Context, notificationID string) (total, succeeded, deadLetter int, err error)
 	GetDeliveryTasksByNotificationID(ctx context.Context, notificationID string) ([]*model.DeliveryTask, error)
 
+	ListNotifications(ctx context.Context, callerID, event string, page, pageSize int) ([]*model.Notification, int, error)
+
 	GetEventSchema(ctx context.Context, eventType string) ([]byte, error)
 }

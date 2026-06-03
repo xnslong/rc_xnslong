@@ -86,4 +86,5 @@ type ConfigProvider interface {
 	GetVendorConfig(vendorID string) (*VendorConfig, bool)
 	GetDeliverySpec(vendorID, eventType string) (*DeliverySpec, bool)
 	GetRoutingRules(eventType string) []RoutingRule
+	GetEventSchema(eventType string) ([]byte, bool)
 }

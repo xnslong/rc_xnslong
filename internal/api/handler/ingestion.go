@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"strconv"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
 
@@ -135,6 +137,61 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 			"delivery_results": deliveryResults,
 			"created_at":      notification.CreatedAt.Format(time.RFC3339),
 			"updated_at":      notification.UpdatedAt.Format(time.RFC3339),
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// List handles GET /api/v1/notifications?caller_id=...&event=...&page=...&page_size=...
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	callerID := r.URL.Query().Get("caller_id")
+	event := r.URL.Query().Get("event")
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	notifications, total, err := h.svc.List(r.Context(), callerID, event, page, pageSize)
+	if err != nil {
+		log.Error().Err(err).Msg("list notifications error")
+		writeError(w, http.StatusInternalServerError, "SERVICE_UNAVAILABLE", "服务暂时不可用")
+		return
+	}
+
+	items := make([]map[string]any, 0, len(notifications))
+	for _, n := range notifications {
+		items = append(items, map[string]any{
+			"notification_id": n.ID,
+			"caller_id":       n.CallerID,
+			"event":           n.EventType,
+			"status":          n.Status,
+			"created_at":      n.CreatedAt.Format(time.RFC3339),
+			"updated_at":      n.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	resp := map[string]any{
+		"data": map[string]any{
+			"items":       items,
+			"total":       total,
+			"page":        page,
+			"page_size":   pageSize,
+			"total_pages": totalPages,
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")

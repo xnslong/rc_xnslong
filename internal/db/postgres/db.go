@@ -191,6 +191,72 @@ func (c *Client) GetDeliveryTasksByNotificationID(ctx context.Context, notificat
 	return tasks, nil
 }
 
+func (c *Client) ListNotifications(ctx context.Context, callerID, event string, page, pageSize int) ([]*model.Notification, int, error) {
+	// Validate page size
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	if page < 1 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+
+	// Build dynamic WHERE clause
+	where := "WHERE 1=1"
+	args := []any{}
+	argIdx := 1
+
+	if callerID != "" {
+		where += fmt.Sprintf(" AND caller_id = $%d", argIdx)
+		args = append(args, callerID)
+		argIdx++
+	}
+	if event != "" {
+		where += fmt.Sprintf(" AND event_type = $%d", argIdx)
+		args = append(args, event)
+		argIdx++
+	}
+
+	// Count total
+	var total int
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM notifications %s", where)
+	err := c.pool.QueryRow(ctx, countQuery, args...).Scan(&total)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count notifications: %w", err)
+	}
+
+	// Fetch page
+	args = append(args, pageSize, offset)
+	query := fmt.Sprintf(`
+		SELECT id, shard_id, caller_id, idempotent_key, event_type, payload, status, created_at, updated_at
+		FROM notifications %s
+		ORDER BY created_at DESC
+		LIMIT $%d OFFSET $%d
+	`, where, argIdx, argIdx+1)
+
+	rows, err := c.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list notifications: %w", err)
+	}
+	defer rows.Close()
+
+	var notifications []*model.Notification
+	for rows.Next() {
+		n := &model.Notification{}
+		err := rows.Scan(&n.ID, &n.ShardID, &n.CallerID, &n.IdempotentKey,
+			&n.EventType, &n.Payload, &n.Status, &n.CreatedAt, &n.UpdatedAt)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scan notification: %w", err)
+		}
+		notifications = append(notifications, n)
+	}
+
+	return notifications, total, nil
+}
+
 func (c *Client) GetEventSchema(ctx context.Context, eventType string) ([]byte, error) {
 	var schemaDef []byte
 	err := c.pool.QueryRow(ctx, `

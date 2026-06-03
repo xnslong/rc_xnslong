@@ -73,6 +73,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, notificationID string) error 
 		return err
 	}
 
+	// 6.5 Update notification status to DELIVERING
+	if err := d.db.UpdateNotificationStatus(ctx, notificationID, "DELIVERING"); err != nil {
+		log.Error().Err(err).Str("notification_id", notificationID).Msg("failed to update notification status to DELIVERING")
+		return err
+	}
+
 	// 7. Publish delivery message for each created task
 	for _, task := range tasks {
 		log.Info().Str("delivery_task_id", task.ID).Str("vendor_id", task.VendorID).Msg("publishing delivery message")

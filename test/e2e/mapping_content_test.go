@@ -70,11 +70,34 @@ response_judgment:
     vendor_id: "mapping_vendor"
   - event_type: "tc373.no_explicit"
     vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_basic"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_with_format"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_with_type"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_static"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_nested"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_payload_ref"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_empty"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_not_array"
+    vendor_id: "mapping_vendor"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "routing_rules.yaml"), []byte(routingYAML), 0644))
 
 	// Event schemas (minimal — accept any object)
-	for _, eventType := range []string{"tc371.field_ref", "tc372.source", "tc373.type", "tc374.format", "tc373.invalid", "tc373.no_explicit"} {
+	allEventTypes := []string{
+		"tc371.field_ref", "tc372.source", "tc373.type", "tc374.format",
+		"tc373.invalid", "tc373.no_explicit",
+		"tc375.each_basic", "tc375.each_with_format", "tc375.each_with_type",
+		"tc375.each_static", "tc375.each_nested", "tc375.each_payload_ref",
+		"tc375.each_empty", "tc375.each_not_array",
+	}
+	for _, eventType := range allEventTypes {
 		schemaYAML := fmt.Sprintf(`event_type: %q
 schema:
   type: object
@@ -93,18 +116,18 @@ schema:
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "event_schemas", "tc373.no_explicit.yaml"), []byte(schemaNoExplicit), 0644))
 
 	// Mapping files
-	// TC3.7.1 — @{payload.field} field references
+	// TC3.7.1 — @{payload:field} field references
 	mapping371 := `event_type: "tc371.field_ref"
 request:
   body:
     type: mapping
     template:
-      order_id: "@{payload.order_id}"
-      nested_val: "@{payload.a.b.c}"
-      missing_val: "@{payload.missing}"
-      non_map_val: "@{payload.str.x}"
+      order_id: "@{payload:order_id}"
+      nested_val: "@{payload:a.b.c}"
+      missing_val: "@{payload:missing}"
+      non_map_val: "@{payload:str.x}"
       static_val: "static-value"
-      mixed_val: "user-@{payload.id}"
+      mixed_val: "user-@{payload:id}"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc371.field_ref.yaml"), []byte(mapping371), 0644))
 
@@ -115,13 +138,13 @@ request:
     type: mapping
     template:
       count:
-        $source: "@{payload.count}"
+        $source: "@{payload:count}"
       active:
-        $source: "@{payload.active}"
+        $source: "@{payload:active}"
       note:
-        $source: "@{payload.note}"
+        $source: "@{payload:note}"
       prefixed:
-        $source: "id_@{payload.id}"
+        $source: "id_@{payload:id}"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc372.source.yaml"), []byte(mapping372), 0644))
 
@@ -132,16 +155,16 @@ request:
     type: mapping
     template:
       as_string:
-        $source: "@{payload.count}"
+        $source: "@{payload:count}"
         $type: string
       as_int:
-        $source: "@{payload.count_str}"
+        $source: "@{payload:count_str}"
         $type: integer
       as_number:
-        $source: "@{payload.price}"
+        $source: "@{payload:price}"
         $type: number
       as_bool:
-        $source: "@{payload.flag}"
+        $source: "@{payload:flag}"
         $type: boolean
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc373.type.yaml"), []byte(mapping373), 0644))
@@ -153,7 +176,7 @@ request:
     type: mapping
     template:
       formatted_date:
-        $source: "@{payload.paid_at}"
+        $source: "@{payload:paid_at}"
         $format: "2006-01-02"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc374.format.yaml"), []byte(mapping374), 0644))
@@ -165,7 +188,7 @@ request:
     type: mapping
     template:
       invalid:
-        $source: "@{payload.count}"
+        $source: "@{payload:count}"
         $type: integer
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc373.invalid.yaml"), []byte(mappingInvalid), 0644))
@@ -177,9 +200,132 @@ request:
     type: mapping
     template:
       count:
-        $source: "@{payload.count}"
+        $source: "@{payload:count}"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc373.no_explicit.yaml"), []byte(mappingNoExplicit), 0644))
+
+	// TC3.7.5 — $each array traversal mapping tests
+
+	// TC3.7-each_basic: basic $each array mapping
+	mappingEachBasic := `event_type: "tc375.each_basic"
+request:
+  body:
+    type: mapping
+    template:
+      products_mapped:
+        $source: "@{payload:products}"
+        $each:
+          product_id: "@{item:id}"
+          quantity: "@{item:qty}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_basic.yaml"), []byte(mappingEachBasic), 0644))
+
+	// TC3.7-each_with_format: $each with $format
+	mappingEachWithFormat := `event_type: "tc375.each_with_format"
+request:
+  body:
+    type: mapping
+    template:
+      orders_mapped:
+        $source: "@{payload:orders}"
+        $each:
+          order_date:
+            $source: "@{item:date}"
+            $format: "2006-01-02"
+          amount: "@{item:total}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_with_format.yaml"), []byte(mappingEachWithFormat), 0644))
+
+	// TC3.7-each_with_type: $each with $type
+	mappingEachWithType := `event_type: "tc375.each_with_type"
+request:
+  body:
+    type: mapping
+    template:
+      items_mapped:
+        $source: "@{payload:items}"
+        $each:
+          price:
+            $source: "@{item:price}"
+            $type: number
+          count:
+            $source: "@{item:count}"
+            $type: integer
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_with_type.yaml"), []byte(mappingEachWithType), 0644))
+
+	// TC3.7-each_static_mixed: $each with static fields mixed in
+	mappingEachStatic := `event_type: "tc375.each_static"
+request:
+  body:
+    type: mapping
+    template:
+      products_mapped:
+        $source: "@{payload:products}"
+        $each:
+          product_id: "@{item:id}"
+          source: "notification"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_static.yaml"), []byte(mappingEachStatic), 0644))
+
+	// TC3.7-each_nested: nested $each
+	mappingEachNested := `event_type: "tc375.each_nested"
+request:
+  body:
+    type: mapping
+    template:
+      orders_mapped:
+        $source: "@{payload:orders}"
+        $each:
+          order_id: "@{item:id}"
+          products:
+            $source: "@{item:items}"
+            $each:
+              product_name: "@{item:name}"
+              cost: "@{item:price}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_nested.yaml"), []byte(mappingEachNested), 0644))
+
+	// TC3.7-each_payload_ref: $each referencing outer payload
+	mappingEachPayloadRef := `event_type: "tc375.each_payload_ref"
+request:
+  body:
+    type: mapping
+    template:
+      products_mapped:
+        $source: "@{payload:products}"
+        $each:
+          product_id: "@{item:id}"
+          quantity: "@{item:qty}"
+          user: "@{payload:user_id}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_payload_ref.yaml"), []byte(mappingEachPayloadRef), 0644))
+
+	// TC3.7-each_empty_array: empty array
+	mappingEachEmpty := `event_type: "tc375.each_empty"
+request:
+  body:
+    type: mapping
+    template:
+      products_mapped:
+        $source: "@{payload:products}"
+        $each:
+          product_id: "@{item:id}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_empty.yaml"), []byte(mappingEachEmpty), 0644))
+
+	// TC3.7-each_not_array: non-array source
+	mappingEachNotArray := `event_type: "tc375.each_not_array"
+request:
+  body:
+    type: mapping
+    template:
+      products_mapped:
+        $source: "@{payload:products}"
+        $each:
+          product_id: "@{item:id}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_not_array.yaml"), []byte(mappingEachNotArray), 0644))
 
 	return tmpDir
 }
@@ -228,7 +374,7 @@ func waitForStatusMapping(baseURL, id string, expected []string, timeout time.Du
 }
 
 // ---------------------------------------------------------------------------
-// TC3.7.1 @{payload.field} — 字段引用取值
+// TC3.7.1 @{payload:field} — 字段引用取值
 // ---------------------------------------------------------------------------
 
 // @test-case TC3.7-pure_field_ref
@@ -470,4 +616,303 @@ func TestMapping_FormatConversion(t *testing.T) {
 	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
 	require.NoError(t, err)
 	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// ---------------------------------------------------------------------------
+// TC3.7.5 $each — 数组遍历映射
+// ---------------------------------------------------------------------------
+
+// @test-case TC3.7-each_basic
+func TestMapping_EachBasic(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_basic",
+		"idempotent_key": "tc375-each-basic-1",
+		"payload": {
+			"products": [{"id": "p1", "qty": 3}, {"id": "p2", "qty": 5}]
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{
+		map[string]any{"product_id": "p1", "quantity": float64(3)},
+		map[string]any{"product_id": "p2", "quantity": float64(5)},
+	}
+	assert.Equal(t, expected, gotBody["products_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_with_format
+func TestMapping_EachWithFormat(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_with_format",
+		"idempotent_key": "tc375-each-format-1",
+		"payload": {
+			"orders": [{"date": 1716518400, "total": 100}]
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{
+		map[string]any{"order_date": "2024-05-24", "amount": float64(100)},
+	}
+	assert.Equal(t, expected, gotBody["orders_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_with_type
+func TestMapping_EachWithType(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_with_type",
+		"idempotent_key": "tc375-each-type-1",
+		"payload": {
+			"items": [{"price": "29.99", "count": "3"}]
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	items := gotBody["items_mapped"].([]any)
+	require.Len(t, items, 1)
+	item := items[0].(map[string]any)
+	assert.InDelta(t, 29.99, item["price"], 0.001)
+	assert.Equal(t, float64(3), item["count"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_static_mixed
+func TestMapping_EachStaticMixed(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_static",
+		"idempotent_key": "tc375-each-static-1",
+		"payload": {
+			"products": [{"id": "p1"}]
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{
+		map[string]any{"product_id": "p1", "source": "notification"},
+	}
+	assert.Equal(t, expected, gotBody["products_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_nested
+func TestMapping_EachNested(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_nested",
+		"idempotent_key": "tc375-each-nested-1",
+		"payload": {
+			"orders": [{"id": "o1", "items": [{"name": "apple", "price": 5}]}]
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{
+		map[string]any{
+			"order_id": "o1",
+			"products": []any{
+				map[string]any{"product_name": "apple", "cost": float64(5)},
+			},
+		},
+	}
+	assert.Equal(t, expected, gotBody["orders_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_payload_ref
+func TestMapping_EachPayloadRef(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_payload_ref",
+		"idempotent_key": "tc375-each-payload-ref-1",
+		"payload": {
+			"user_id": "u_001",
+			"products": [{"id": "p1", "qty": 3}]
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{
+		map[string]any{"product_id": "p1", "quantity": float64(3), "user": "u_001"},
+	}
+	assert.Equal(t, expected, gotBody["products_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_empty_array
+func TestMapping_EachEmptyArray(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_empty",
+		"idempotent_key": "tc375-each-empty-1",
+		"payload": {
+			"products": []
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{}
+	assert.Equal(t, expected, gotBody["products_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_not_array
+func TestMapping_EachNotArray(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	body := `{
+		"event": "tc375.each_not_array",
+		"idempotent_key": "tc375-each-not-array-1",
+		"payload": {
+			"products": "not_an_array"
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	// Notification should become FAILED because mapping fails for non-array $each source
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"FAILED"}, 15*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "FAILED", status)
+
+	// The vendor receives 0 requests from this notification because the
+	// engine fails before making any HTTP call.
+	assert.Empty(t, suite.MockVendors["mapping_vendor"].Requests(),
+		"vendor should not receive any request when $each source is not an array")
 }

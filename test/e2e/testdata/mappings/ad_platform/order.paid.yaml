@@ -3,7 +3,7 @@ request:
   body:
     type: mapping
     template:
-      order_id: "@{payload.order_id}"
-      user_id: "@{payload.user_id}"
-      amount: "@{payload.amount}"
-      currency: "@{payload.currency}"
+      order_id: "@{payload:order_id}"
+      user_id: "@{payload:user_id}"
+      amount: "@{payload:amount}"
+      currency: "@{payload:currency}"

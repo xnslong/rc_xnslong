@@ -359,3 +359,130 @@ func TestSchema_MultipleErrors(t *testing.T) {
 	assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
 	assert.GreaterOrEqual(t, len(errResp.Error.Details), 2, "should contain 2+ validation details")
 }
+
+// ---------------------------------------------------------------------------
+// List Notifications API tests
+// ---------------------------------------------------------------------------
+
+func TestIngestion_ListNotifications(t *testing.T) {
+	suite, err := e2e.SetupSuite()
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	// Create a notification first
+	body := `{
+		"event": "order.paid",
+		"idempotent_key": "list-test-1",
+		"payload": {"order_id": "list1", "user_id": "u1", "amount": 100, "currency": "CNY"}
+	}`
+
+	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	listURL := suite.ServerURL + "/api/v1/notifications"
+	resp, err = http.Get(listURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			Items      []map[string]any `json:"items"`
+			Total      int             `json:"total"`
+			Page       int             `json:"page"`
+			PageSize   int             `json:"page_size"`
+			TotalPages int             `json:"total_pages"`
+		} `json:"data"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	require.NoError(t, err)
+
+	assert.GreaterOrEqual(t, result.Data.Total, 1)
+	assert.Equal(t, 1, result.Data.Page)
+	assert.Equal(t, 20, result.Data.PageSize)
+	require.Len(t, result.Data.Items, result.Data.Total)
+	assert.NotEmpty(t, result.Data.Items[0]["notification_id"])
+	assert.Equal(t, "order.paid", result.Data.Items[0]["event"])
+}
+
+func TestIngestion_ListNotificationsWithEventFilter(t *testing.T) {
+	suite, err := e2e.SetupSuite()
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	body := `{
+		"event": "order.paid",
+		"idempotent_key": "list-filter-test-1",
+		"payload": {"order_id": "list-filter", "user_id": "u1", "amount": 100, "currency": "CNY"}
+	}`
+
+	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	listURL := suite.ServerURL + "/api/v1/notifications?event=order.paid"
+	resp, err = http.Get(listURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			Items      []map[string]any `json:"items"`
+			Total      int             `json:"total"`
+			Page       int             `json:"page"`
+			PageSize   int             `json:"page_size"`
+			TotalPages int             `json:"total_pages"`
+		} `json:"data"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	require.NoError(t, err)
+
+	assert.GreaterOrEqual(t, result.Data.Total, 1)
+	for _, item := range result.Data.Items {
+		assert.Equal(t, "order.paid", item["event"])
+	}
+}
+
+func TestIngestion_ListNotificationsWithPagination(t *testing.T) {
+	suite, err := e2e.SetupSuite()
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	body := `{
+		"event": "order.paid",
+		"idempotent_key": "list-pagination-test-1",
+		"payload": {"order_id": "list-page", "user_id": "u1", "amount": 100, "currency": "CNY"}
+	}`
+
+	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	listURL := suite.ServerURL + "/api/v1/notifications?page=1&page_size=1"
+	resp, err = http.Get(listURL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var result struct {
+		Data struct {
+			Items      []map[string]any `json:"items"`
+			Total      int             `json:"total"`
+			Page       int             `json:"page"`
+			PageSize   int             `json:"page_size"`
+			TotalPages int             `json:"total_pages"`
+		} `json:"data"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	require.NoError(t, err)
+
+	assert.GreaterOrEqual(t, result.Data.Total, 1)
+	assert.Equal(t, 1, result.Data.Page)
+	assert.Equal(t, 1, result.Data.PageSize, "page_size should be 1")
+	assert.GreaterOrEqual(t, result.Data.TotalPages, 1)
+}

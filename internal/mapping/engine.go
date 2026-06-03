@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -15,11 +14,34 @@ import (
 	"github.com/xnslong/rc_xnslong/internal/port"
 )
 
-var payloadFieldRe = regexp.MustCompile(`@\{payload\.([^}]+)\}`)
+// resolveRefRe matches @{scope:path} references where scope is payload or item.
+var resolveRefRe = regexp.MustCompile(`@\{(payload|item):([^}]+)\}`)
+
+// resolveContext is the unified data context container for the mapping engine.
+// It provides namespace isolation between the original notification payload
+// and the current $each iteration item.
+//
+//	@{payload:field} resolves against ctx.payload (original notification data).
+//	@{item:field}    resolves against ctx.item (current $each element, nil outside $each).
+type resolveContext struct {
+	payload map[string]any
+	item    map[string]any // set during $each iteration, nil otherwise
+}
+
+func (c resolveContext) lookup(scope string) map[string]any {
+	switch scope {
+	case "payload":
+		return c.payload
+	case "item":
+		return c.item
+	default:
+		return nil
+	}
+}
 
 // Engine builds HTTP requests from vendor config, mapping config, and payload.
-// It resolves @{payload.field} references, processes $source/$type/$format
-// directives, and assembles a complete http.Request.
+// It resolves @{payload:field} and @{item:field} references, processes
+// $source/$type/$format/$each directives, and assembles a complete http.Request.
 type Engine struct{}
 
 // NewEngine creates a new request building engine.
@@ -34,9 +56,11 @@ func (e *Engine) BuildRequest(vendorCfg *port.VendorConfig, mappingCfg *port.Map
 		return nil, nil
 	}
 
+	ctx := resolveContext{payload: payload}
+
 	var bodyReader io.Reader
 	if mappingCfg != nil && mappingCfg.Body.Type != "" && mappingCfg.Body.Type != "none" {
-		bodyBytes, err := e.buildBody(&mappingCfg.Body, payload)
+		bodyBytes, err := e.buildBody(&mappingCfg.Body, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("build body: %w", err)
 		}
@@ -57,41 +81,9 @@ func (e *Engine) BuildRequest(vendorCfg *port.VendorConfig, mappingCfg *port.Map
 	return req, nil
 }
 
-// resolveString resolves @{payload.field} references in a template string.
-// Pure @{payload.field} (no prefix/suffix) returns the string representation of the value;
-// mixed content is concatenated as string.
-func (e *Engine) resolveString(tmpl string, payload map[string]any) (string, error) {
-	loc := payloadFieldRe.FindStringIndex(tmpl)
-	if loc == nil {
-		// No template references, return as-is
-		return tmpl, nil
-	}
-
-	// Pure reference (no prefix/suffix, single reference)
-	if loc[0] == 0 && loc[1] == len(tmpl) {
-		path := tmpl[len("@{payload.") : len(tmpl)-1]
-		val := getNestedField(payload, path)
-		if val == nil {
-			log.Printf("warning: payload field %q not found", path)
-		}
-		return tostring(val), nil
-	}
-
-	// Mixed content with prefix/suffix or multiple references
-	result := payloadFieldRe.ReplaceAllStringFunc(tmpl, func(match string) string {
-		path := match[len("@{payload.") : len(match)-1]
-		val := getNestedField(payload, path)
-		if val == nil {
-			log.Printf("warning: payload field %q not found", path)
-		}
-		return tostring(val)
-	})
-	return result, nil
-}
-
 // buildBody constructs the request body based on the body configuration type.
 // Supported types: none, raw, mapping, plugin.
-func (e *Engine) buildBody(bodyCfg *port.BodyConfig, payload map[string]any) ([]byte, error) {
+func (e *Engine) buildBody(bodyCfg *port.BodyConfig, ctx resolveContext) ([]byte, error) {
 	if bodyCfg == nil {
 		return nil, nil
 	}
@@ -104,9 +96,9 @@ func (e *Engine) buildBody(bodyCfg *port.BodyConfig, payload map[string]any) ([]
 			return nil, fmt.Errorf("raw body marshal: %w", err)
 		}
 		tmplStr := string(tmplBytes)
-		return e.resolveRawBody(tmplStr, payload)
+		return e.resolveRawBody(tmplStr, ctx)
 	case "mapping":
-		return e.resolveMappingBody(bodyCfg.Template, payload)
+		return e.resolveMappingBody(bodyCfg.Template, ctx)
 	case "plugin":
 		return nil, fmt.Errorf("mapper plugin not supported yet")
 	default:
@@ -115,41 +107,41 @@ func (e *Engine) buildBody(bodyCfg *port.BodyConfig, payload map[string]any) ([]
 }
 
 // resolveMappingBody recursively processes a mapping template body.
-func (e *Engine) resolveMappingBody(template any, payload map[string]any) ([]byte, error) {
-	resolved, err := e.resolveNode(template, payload)
+func (e *Engine) resolveMappingBody(template any, ctx resolveContext) ([]byte, error) {
+	resolved, err := e.resolveNode(template, ctx)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(resolved)
 }
 
-// resolveRawBody processes a raw string body by resolving @{} references.
-func (e *Engine) resolveRawBody(template string, payload map[string]any) ([]byte, error) {
-	resolved, err := e.resolveString(template, payload)
+// resolveRawBody processes a raw string body by resolving @{} references
+// and returning the result as bytes.
+func (e *Engine) resolveRawBody(template string, ctx resolveContext) ([]byte, error) {
+	resolved, err := e.resolveField(template, ctx)
 	if err != nil {
 		return nil, err
 	}
-	return []byte(resolved), nil
+	return []byte(tostring(resolved)), nil
 }
 
 // resolveNode recursively resolves a template node, handling strings,
 // maps (including $keywords), and arrays.
-func (e *Engine) resolveNode(node any, payload map[string]any) (any, error) {
+func (e *Engine) resolveNode(node any, ctx resolveContext) (any, error) {
 	switch v := node.(type) {
 	case string:
-		// Resolve @{...} references
-		return e.resolveString(v, payload)
+		return e.resolveField(v, ctx)
 	case map[string]any:
-		// Check for $source directive
+		// Check for $source directive (covers $source, $type, $format, $each)
 		if _, ok := v["$source"]; ok {
-			return e.resolveSourceDirective(v, payload)
+			return e.resolveSourceDirective(v, ctx)
 		}
 		// Regular map: resolve each value, handle $$ prefix escaping
 		result := make(map[string]any, len(v))
 		for key, val := range v {
 			// $$ prefix escapes to literal $
 			actualKey := strings.TrimPrefix(key, "$$")
-			resolved, err := e.resolveNode(val, payload)
+			resolved, err := e.resolveNode(val, ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -159,7 +151,7 @@ func (e *Engine) resolveNode(node any, payload map[string]any) (any, error) {
 	case []any:
 		result := make([]any, len(v))
 		for i, val := range v {
-			resolved, err := e.resolveNode(val, payload)
+			resolved, err := e.resolveNode(val, ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -172,16 +164,24 @@ func (e *Engine) resolveNode(node any, payload map[string]any) (any, error) {
 	}
 }
 
-// resolveSourceDirective handles $source/$type/$format keyword directives.
+// resolveSourceDirective handles $source/$type/$format/$each keyword directives.
+// If the directive contains $each, it delegates to resolveEachDirective for
+// array traversal mapping.
 // $type conversion happens before $format conversion.
-func (e *Engine) resolveSourceDirective(v map[string]any, payload map[string]any) (any, error) {
+func (e *Engine) resolveSourceDirective(v map[string]any, ctx resolveContext) (any, error) {
+	// Scenario A: $source + $each → array traversal mapping
+	if _, ok := v["$each"]; ok {
+		return e.resolveEachDirective(v, ctx)
+	}
+
+	// Scenario B: $source (optional $type/$format) → single value extraction + conversion
 	sourceExpr, ok := v["$source"].(string)
 	if !ok {
 		return nil, fmt.Errorf("$source must be a string")
 	}
 
-	// Resolve @{payload.field} reference to get the raw value
-	raw, err := e.resolveField(sourceExpr, payload)
+	// Resolve @{scope:path} reference to get the raw value
+	raw, err := e.resolveField(sourceExpr, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -211,10 +211,63 @@ func (e *Engine) resolveSourceDirective(v map[string]any, payload map[string]any
 	return raw, nil
 }
 
-// resolveField resolves a field expression which may be a pure @{payload.field}
-// reference or a mixed string with prefixes/suffixes.
-func (e *Engine) resolveField(expr string, payload map[string]any) (any, error) {
-	loc := payloadFieldRe.FindStringIndex(expr)
+// resolveEachDirective handles $source + $each array traversal mapping.
+// It resolves $source to get the source array, then for each element
+// creates an extended context with the element as ctx.item and applies
+// the $each template mapping.
+func (e *Engine) resolveEachDirective(v map[string]any, ctx resolveContext) (any, error) {
+	sourceExpr, ok := v["$source"].(string)
+	if !ok {
+		return nil, fmt.Errorf("$source must be a string for $each")
+	}
+
+	srcRaw, err := e.resolveField(sourceExpr, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	srcArray, ok := srcRaw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("$source %q must resolve to an array, got %T", sourceExpr, srcRaw)
+	}
+
+	eachTemplate, ok := v["$each"]
+	if !ok {
+		return nil, fmt.Errorf("$each directive missing")
+	}
+
+	result := make([]any, 0, len(srcArray))
+	for _, elem := range srcArray {
+		elemMap, ok := elem.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("$each array element must be a map, got %T", elem)
+		}
+
+		// Extend context: keep original payload, add current item
+		itemCtx := resolveContext{payload: ctx.payload, item: elemMap}
+		mapped, err := e.resolveNode(eachTemplate, itemCtx)
+		if err != nil {
+			return nil, fmt.Errorf("$each mapping failed: %w", err)
+		}
+		result = append(result, mapped)
+	}
+
+	return result, nil
+}
+
+// resolveField resolves a field expression which may contain @{scope:path}
+// references. It is the single entry point for all @{} reference replacement.
+//
+// Behavior depends on the expression form:
+//   - No @{} references: returns expr as-is (static string)
+//   - Pure "@{scope:path}" (single reference, no prefix/suffix): returns the
+//     original typed value from ctx (preserves int/bool/nil types).
+//   - Mixed content (prefix/suffix/multiple @{}): concatenates everything as string.
+//
+// scope can be "payload" or "item", resolved against ctx.payload and ctx.item
+// respectively.
+func (e *Engine) resolveField(expr string, ctx resolveContext) (any, error) {
+	loc := resolveRefRe.FindStringIndex(expr)
 	if loc == nil {
 		// No template references, return as-is
 		return expr, nil
@@ -222,15 +275,19 @@ func (e *Engine) resolveField(expr string, payload map[string]any) (any, error) 
 
 	// Pure reference (no prefix/suffix, single reference) — return original type
 	if loc[0] == 0 && loc[1] == len(expr) {
-		path := expr[len("@{payload.") : len(expr)-1]
-		val := getNestedField(payload, path)
+		matches := resolveRefRe.FindStringSubmatch(expr)
+		scope := matches[1]
+		path := matches[2]
+		val := getNestedField(ctx.lookup(scope), path)
 		return val, nil
 	}
 
 	// Mixed content with prefix/suffix or multiple references — return string
-	result := payloadFieldRe.ReplaceAllStringFunc(expr, func(match string) string {
-		path := match[len("@{payload.") : len(match)-1]
-		return tostring(getNestedField(payload, path))
+	result := resolveRefRe.ReplaceAllStringFunc(expr, func(match string) string {
+		matches := resolveRefRe.FindStringSubmatch(match)
+		scope := matches[1]
+		path := matches[2]
+		return tostring(getNestedField(ctx.lookup(scope), path))
 	})
 	return result, nil
 }

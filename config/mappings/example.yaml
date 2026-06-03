@@ -1,21 +1,21 @@
-# TODO: 数据映射规则示例
+# 数据映射规则示例
 # 设计文档: /doc/requirements/202605-notification-design.md §3.3
 vendor_id: crm_system
 event_type: order.paid
 request:
-  url: "/api/v3/contacts/@{payload.user_id}"
+  url: "/api/v3/contacts/@{payload:user_id}"
   method: PATCH
   headers:
     Content-Type: application/json
-    X-Test-Case-Id: "@{payload._test_case_id}"
+    X-Test-Case-Id: "@{payload:_test_case_id}"
   body:
     contact:
-      name: "@{payload.user_name}"
-      email: "@{payload.user_email}"
+      name: "@{payload:user_name}"
+      email: "@{payload:user_email}"
       tags:
         - "paying_user"
-        - "@{payload.tier}"
+        - "@{payload:tier}"
     paid_at:
-      $source: "@{payload.paid_at}"
+      $source: "@{payload:paid_at}"
       $format: "yyyy-MM-dd"
       $type: "string"
