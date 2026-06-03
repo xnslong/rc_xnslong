@@ -825,6 +825,12 @@ request:
         count:
           $source: "@{payload.count}"        # payload 中是 "42"（string）
           $type: integer                     # 强制转为 42（integer）
+        items:                               # 数组字段：遍历 product_list 生成
+          $source: "@{payload.product_list}"
+          $each:
+            product_id: "@{item.product_id}"
+            quantity: "@{item.qty}"
+            location: "@{item.warehouse}"
 ```
 
 **映射语法完整参考**：
@@ -833,11 +839,14 @@ request:
 |------|------|------|
 | `@{payload.field}` | `@{payload.order_id}` | 从 payload 取值 |
 | `@{payload.a.b.c}` | `@{payload.user.address.city}` | 嵌套路径访问 |
+| `@{item.field}` | `@{item.product_id}` | 从 `$each` 遍历的当前元素取值 |
+| `@{item.a.b}` | `@{item.user.address.city}` | 当前元素的嵌套路径访问 |
 | `"static_value"` | `"customer"` | 静态字符串 |
 | `123` | `29900` | 静态数字 |
 | `$source` | `$source: "@{payload.paid_at}"` | 引擎关键字：取值来源 |
 | `$format` | `$format: "yyyy-MM-dd"` | 引擎关键字：格式转换 |
-| `$type` | `$type: "string"` | 引擎关键字：强制类型转换。无 `$type` 则保持 payload 原始类型 |
+| `$type` | `$type: "integer"` | 引擎关键字：强制类型转换。无 `$type` 则保持 payload 原始类型 |
+| `$each` | `$each:` 后接元素映射块 | 引擎关键字：数组遍历。配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义每个元素的映射规则，当前元素通过 `@{item.field}` 引用 |
 
 **DeliverySpec 组合**：MappingConfig 和 ResponseJudgment 按 `(vendor_id, event_type)` 组合为 DeliverySpec（投递规格），由 ConfigLoader 统一返回。Judgment 可选，非 nil 时覆盖供应商级别的默认判决规则。详见 §9.3.1。
 
@@ -848,34 +857,7 @@ request:
 | `$source` | 引擎关键字，表示取值来源 | `$source: "@{payload.paid_at}"` |
 | `$format` | 引擎关键字，表示格式转换 | `$format: "yyyy-MM-dd"` |
 | `$type` | 引擎关键字，表示强制类型转换 | `$type: "string"`，可选值: `string` / `integer` / `number` / `boolean` |
-| `$each` | 引擎关键字，表示数组遍历 | `$each` 配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义元素映射规则 |
 | `$$field_name` | 转义为字面量 `$field_name` | `$$dollar_value: "test"` → 输出 `{"$dollar_value": "test"}` |
-
-**数组遍历（`$source` + `$each`）**：当源数据为数组，目标也需要以数组组织时，`$source` 指定源数组，`$each` 定义每个元素的映射规则。`item` 是当前元素的引用名——`@{item.field}` 表示"取当前元素的 field 字段"。
-
-```yaml
-# 输入: product_list = [{product_id: "p1", qty: 3, warehouse: "SH"}, ...]
-items:
-  $source: "@{payload.product_list}"
-  $each:
-    product_id: "@{item.product_id}"
-    quantity: "@{item.qty}"
-    location: "@{item.warehouse}"
-```
-
-输出：`items = [{product_id: "p1", quantity: 3, location: "SH"}, ...]`
-
-`$each` 内支持 `@{item.field}` 引用、静态值、`$format`/`$type` 等所有引擎关键字：
-
-```yaml
-items:
-  $source: "@{payload.order_list}"
-  $each:
-    order_sn: "@{item.order_id}"
-    total:
-      $source: "@{item.amount}"
-      $type: integer
-```
 
 <a id="45-路由规则格式"></a>
 ### 4.5 路由规则格式（MVP）
