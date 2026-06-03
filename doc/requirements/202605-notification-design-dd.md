@@ -150,13 +150,13 @@ stateDiagram-v2
 
 状态迁移条件：
 
-| 当前状态 | 目标状态 | 触发条件 |
+| 前提条件 | 目标状态 | 更新方式 |
 |----------|---------|----------|
-| PENDING | DELIVERING | 路由分发器完成匹配并创建了至少 1 个 DeliveryTask |
-| PENDING | FAILED | 路由分发器匹配结果为 0 个供应商 |
-| DELIVERING | SUCCEEDED | 所有关联 DeliveryTask 状态为 SUCCEEDED |
-| DELIVERING | PARTIALLY_FAILED | 部分 DeliveryTask SUCCEEDED，剩余全部 DEAD_LETTER |
-| DELIVERING | FAILED | 所有 DeliveryTask 均为 DEAD_LETTER |
+| 所有 DeliveryTask SUCCEEDED | SUCCEEDED | 最后一个成功的 Task Worker 在投递成功后更新 |
+| 部分 Task DEAD_LETTER，部分 SUCCEEDED | PARTIALLY_FAILED | 同上（最后一个终态 Task 触发） |
+| 所有 Task DEAD_LETTER | FAILED | 同上 |
+
+> `PENDING → DELIVERING` 由路由分发器推动；各 DeliveryTask 终态到达后在 Worker 内触发 `notifications` 状态更新。若 DB 更新失败，Worker 的消息经 MQ 重新入队后重试——此时 `delivery_task` 已标记成功，重试不会重复发请求，仅重试 DB 状态更新。**无需额外的后台补偿扫描**。
 
 > Notification 的 FAILED 和 PARTIALLY_FAILED 是终端状态，不自动恢复。人工排查问题后可通过重试或重新提交通知来恢复。
 
@@ -255,7 +255,6 @@ erDiagram
 | 幂等校验 | `(caller_id, idempotent_key)` 唯一约束 | 每次提交通知都需检查是否重复，这是最高频的查询路径。唯一约束自带索引，无需额外创建 |
 | 调用方列表查询 | `(caller_id, created_at DESC)` | 调用方查自己的通知列表，按时间倒序分页。复合索引让一次索引扫描即可完成排序+过滤，避免文件排序 |
 | 运营分析 | `(event_type, created_at DESC)` | 按事件类型统计/排查问题时走此索引。非高频路径，但数据量增长后全表扫描代价高，建索引成本可控 |
-| 后台扫描修复 | `(status, created_at)` 条件索引，仅 `PENDING / DELIVERING` | 后台任务扫描"还在处理中"的通知做超时补偿。条件索引缩小索引体积，且只有这两状态是扫描目标，完全命中 |
 
 #### 2.3.2 delivery_tasks 索引
 
