@@ -211,7 +211,7 @@ erDiagram
     delivery_tasks {
         uuid        id               PK
         int         shard_id         "预分片键"
-        uuid        notification_id  "FK: notifications.id"
+        uuid        notification_id  "FK，UK: (notification_id, vendor_id)"
         string      vendor_id        "对应配置 vendors/ 目录"
         string      status           "PENDING / DELIVERING / SUCCEEDED / FAILED / IGNORED / DEAD_LETTER"
         int         retry_count      "已重试次数（不含首次）"
@@ -259,7 +259,7 @@ erDiagram
 
 | 用途 | 索引字段 | 为什么 |
 |------|---------|--------|
-| 通知详情展示 | `(notification_id)` | 用户查通知详情时需列出所有关联的投递任务。`notification_id` 是 FK，查询频繁，索引必不可少 |
+| 通知详情展示 | `(notification_id, vendor_id)` 唯一约束 | 既满足"查一个通知的全部投递任务"，也支持"查某个通知下特定供应商的任务"。且同一通知对同一供应商不会重复投递，这本身就是业务上的唯一约束 |
 | 死信运营查询 | `(vendor_id, created_at DESC)` 条件索引，仅 `DEAD_LETTER` | 运维查某个供应商的死信情况时使用。`DEAD_LETTER` 是低频状态行，条件索引极度精简 |
 
 <a id="24-分区与分片策略"></a>
