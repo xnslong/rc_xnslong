@@ -410,8 +410,8 @@ func TestMapping_FieldRef(t *testing.T) {
 
 	assert.Equal(t, "123", gotBody["order_id"])          // TC3.7-pure_field_ref
 	assert.Equal(t, "v", gotBody["nested_val"])           // TC3.7-nested_path
-	assert.Equal(t, "", gotBody["missing_val"])           // TC3.7-missing_field
-	assert.Equal(t, "", gotBody["non_map_val"])           // TC3.7-non_map_intermediate
+	assert.Nil(t, gotBody["missing_val"])                 // TC3.7-missing_field: pure reference returns nil
+	assert.Nil(t, gotBody["non_map_val"])                 // TC3.7-non_map_intermediate: pure reference returns nil
 	assert.Equal(t, "static-value", gotBody["static_val"]) // TC3.7-static_template
 	assert.Equal(t, "user-123", gotBody["mixed_val"])     // TC3.7-mixed_template
 
