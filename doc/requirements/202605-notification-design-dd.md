@@ -222,23 +222,7 @@ erDiagram
         timestamp   updated_at
     }
 
-    dead_letter_records {
-        uuid        id                PK
-        uuid        delivery_task_id  "FK: delivery_tasks.id，唯一"
-        uuid        notification_id   "FK: notifications.id"
-        string      vendor_id
-        int         retry_count       "最终重试次数"
-        text        last_error
-        jsonb       last_response     "状态码和 body 截断"
-        timestamp   last_attempt_at
-        string      status            "PENDING / RETRYING / ARCHIVED"
-        timestamp   created_at
-        timestamp   updated_at
-    }
-
     notifications ||--o{ delivery_tasks : "投递"
-    notifications ||--o{ dead_letter_records : "死信"
-    delivery_tasks ||--o| dead_letter_records : "死信"
 ```
 
 > **Schema 管理说明**：事件类型 Schema（JSON Schema Draft-07）通过 Git 管理，存放在 `config/events/` 目录下，不在 DB 中存储。接收网关在收到提交通知时，从本地配置文件加载对应 Schema 校验 payload。详见 §4.2。
@@ -1427,9 +1411,9 @@ processMessage(msg):
     return
 
   // Step 6: 用判决规则判定响应
-  // 优先级：deliverySpec.judgment → vendorConfig.judgment
-  rule ← deliverySpec.judgment ?? vendorConfig.judgment
-  result ← judgeResponse(rule, httpResponse.statusCode, httpResponse.body)
+  // MVP：使用简单 HTTP 状态码判定（200–299 → 成功，5xx/429 → 可重试，其他 → 不可重试进死信）
+  // 未来扩展：支持从 deliverySpec.judgment / vendorConfig.judgment 读取可配置规则
+  result ← judgeResponse(httpResponse.statusCode, httpResponse.body)
 
   记录投递尝试日志(deliveryTask.id, httpRequest.url, httpResponse.statusCode, duration, result)
 
@@ -1473,10 +1457,11 @@ handleRetry(task, msg, errorMsg):
   )
 
   if task.retryCount < task.maxRetries:
-    // 有重试次数余量 → 向 DLX 投递一条带 TTL 的延迟消息
-    // TTL 到期后消息自动死信回投递队列，重新被 Worker 消费
+    // 有重试次数余量 → 向 notification.retry 投递延迟消息
+    // 按 nextDelay 向上取整匹配时间槽，选择对应 routing key
+    // 各延迟队列声明固定 x-message-ttl，到期后自动死信回投递队列重新消费
     publishDelayed(task.id, nextDelay)
-    msg.ack()   // 原消息已确认，新消息在 MQ 中等待 TTL
+    msg.ack()   // 原消息已确认，新消息在对应的 retry 队列中等待 TTL 到期
 
   else:
     // 重试次数耗尽 → 写入死信表，不再投递
@@ -1489,24 +1474,30 @@ handleRetry(task, msg, errorMsg):
 ```
 publishDelayed(taskId, delay):
   // 被 handleRetry 在有重试余量时调用
-  // 向 DLX 投递一条延迟消息，利用 MQ 原生 DLX+TTL 机制实现延迟重投：
+  // delay 由 calculateBackoff 算出
+  // 按 delay 向上取整匹配最近的时间槽，选择对应 routing key 发布
+  // 各延迟队列声明固定 x-message-ttl，到期后自动死信回投递队列重新消费
   //
-  //   DLX (fanout) → RETRY_EX → RETRY_Q
-  //                                 ↓ TTL 到期
-  //   DELIVERY_EX ← 死信回投      ← 
+  //   RETRY_EX → (按 routing key 路由) → RETRY_{slot}S_Q
+  //                                            ↓ x-message-ttl 到期
+  //   DELIVERY_EX ← 死信回投 ←
   //       ↓
   //   DELIVERY_Q → Worker 重新消费
-  //
-  // TTL 由消息的 expiration 属性（毫秒）控制，无需额外插件
+
+  routingKey ← selectTimeSlot(delay, retrySlots)
+  // retrySlots 是运行时配置，定义由几个时间槽及各自的 TTL、routing key
+  // selectTimeSlot 将 delay 向上取整匹配最近的时间槽：
+  //   示例配置：[{key:"retry.2s", ttl:2000}, {key:"retry.5s", ttl:5000}, ...]
+  //   delay=800ms  → 2s 槽 → "retry.2s"
+  //   delay=3s     → 5s 槽 → "retry.5s"
+  //   delay=8s     → 10s 槽 → "retry.10s"
 
   msg ← 构造 MQ 消息(
     body: { "delivery_task_id": taskId },
-    persistent: true,
-    expirationMs: delay 转为毫秒,
-    headers: { "x-original-routing-key": "delivery" }
+    persistent: true
   )
 
-  发布到 exchange("notification.dlx"), routingKey: ""
+  发布到 exchange("notification.retry"), routingKey: routingKey
 ```
 
 **calculateBackoff —— 指数退避**（伪码）：
@@ -1555,7 +1546,7 @@ calculateBackoff(attempt, policy):
 <a id="6-mq-拓扑设计"></a>
 ## 6. MQ 拓扑设计
 
-> **MVP 范围**：使用共享投递队列（全供应商统一），不按供应商分区。重试通过 MQ DLX+TTL 机制实现延迟重投。
+> **MVP 范围**：使用共享投递队列（全供应商统一），不按供应商分区。重试通过 MQ 队列级 TTL 机制实现延迟重投。
 >
 > **未来扩展**：第二阶段引入按供应商分区队列，见 HLD §4.2。
 
@@ -1567,14 +1558,13 @@ flowchart TB
     subgraph EX["Exchange 层"]
         TRIGGER_EX["notification.trigger<br/>(direct)"]
         DELIVERY_EX["notification.delivery<br/>(direct)"]
-        DLX_EX["notification.dlx<br/>(fanout)"]
         RETRY_EX["notification.retry<br/>(direct)"]
     end
 
     subgraph Q["Queue 层"]
         TRIGGER_Q["notification.trigger.queue"]
         DELIVERY_Q["notification.delivery.queue<br/>(共享，全供应商统一)"]
-        RETRY_Q["notification.retry.queue"]
+        RETRY_QS["notification.retry.*.queue<br/>(多个队列，按延迟时间命名)"]
     end
 
     GW[接收网关] -->|PUBLISH| TRIGGER_EX
@@ -1585,11 +1575,9 @@ flowchart TB
     DELIVERY_EX --> DELIVERY_Q
     DELIVERY_Q --> WP[共享 Worker 池]
 
-    WP -->|可重试失败| DLX_EX
-    DLX_EX --> RETRY_EX
-    RETRY_EX --> RETRY_Q
-    RETRY_Q -->|TTL 到期后死信回| DELIVERY_EX
-    DELIVERY_EX --> DELIVERY_Q
+    WP -->|可重试失败<br/>PUBLISH 按路由键选择延迟队列| RETRY_EX
+    RETRY_EX -->|retry.2s / retry.5s / ...| RETRY_QS
+    RETRY_QS -->|TTL 到期死信回| DELIVERY_EX
 ```
 
 <a id="62-触发通道"></a>
@@ -1632,37 +1620,43 @@ flowchart TB
 | Binding | `notification.delivery.queue` ↔ `notification.delivery` | routing_key = `delivery` |
 
 <a id="64-延迟重试通道"></a>
-### 6.4 延迟重试通道（MVP：DLX+TTL）
+### 6.4 延迟重试通道（MVP：队列级 TTL）
 
-采用 **DLX + TTL** 方案（无需额外插件），Worker 在投递失败时可重试时，将消息发布到 DLX，经过 RETRY_EX→RETRY_Q 等待 TTL 到期后，死信回 DELIVERY_EX 重新投递：
+采用**预定义时间槽 + 队列级 TTL** 方案。Worker 在投递失败可重试时，按 backoff 计算结果向上取整到最近的时间槽，将消息发布到 `notification.retry` exchange 并选择对应 routing key。各延迟队列在声明时固定 `x-message-ttl`，TTL 到期后消息自动死信回 `notification.delivery` exchange：
 
 ```mermaid
 flowchart LR
-    DELIVERY_Q[投递队列<br/>notification.delivery.queue] -->|消费失败 可重试| DLX_EX
-    DLX_EX -->|fanout| RETRY_EX
-    RETRY_EX -->|消息带有 expiration| RETRY_Q
-    RETRY_Q -->|到期后死信回| DELIVERY_EX
-    DELIVERY_EX -->|重新消费| DELIVERY_Q
-
-    subgraph "DLX + TTL 机制"
-        A[Worker 将消息发布到 DLX<br/>并设置 expiration=next_delay_ms]
-        B[DLX → RETRY_EX → RETRY_Q]
-        C[消息在 RETRY_Q 中等待 TTL 过期]
-        D[TTL 过期 → 死信回 DELIVERY_EX]
-        E[DELIVERY_EX → 投递队列<br/>重新消费]
-        A --> B --> C --> D --> E
-    end
+    WP[Worker Pool] -->|"PUBLISH routing_key=retry.5s"| RETRY_EX["notification.retry (direct)"]
+    RETRY_EX -->|"retry.2s"| Q2["notification.retry.2s.queue<br/>(x-message-ttl=2000)"]
+    RETRY_EX -->|"retry.5s"| Q5["notification.retry.5s.queue<br/>(x-message-ttl=5000)"]
+    RETRY_EX -->|"retry.10s"| Q10["notification.retry.10s.queue<br/>(x-message-ttl=10000)"]
+    RETRY_EX -->|"retry.30s"| Q30["notification.retry.30s.queue<br/>(x-message-ttl=30000)"]
+    Q2 -->|死信| DELIVERY_EX["notification.delivery"]
+    Q5 -->|死信| DELIVERY_EX
+    Q10 -->|死信| DELIVERY_EX
+    Q30 -->|死信| DELIVERY_EX
+    DELIVERY_EX -->|"# 通配"| DELIVERY_Q["notification.delivery.queue<br/>重新消费"]
 ```
+
+**时间槽定义**（运行时配置，按需增删。以下为示例值）：
+
+| 时间槽 | routing key | Queue | TTL |
+|--------|-------------|-------|-----|
+| 2s | `retry.2s` | `notification.retry.2s.queue` | 2000ms |
+| 5s | `retry.5s` | `notification.retry.5s.queue` | 5000ms |
+| 10s | `retry.10s` | `notification.retry.10s.queue` | 10000ms |
+| 30s | `retry.30s` | `notification.retry.30s.queue` | 30000ms |
 
 **声明拓扑**：
 
 | 元素 | 类型 | 属性 |
 |------|------|------|
-| Exchange | `notification.dlx` | fanout, durable |
 | Exchange | `notification.retry` | direct, durable |
-| Queue | `notification.retry.queue` | durable, `x-dead-letter-exchange = notification.delivery`，TTL 由每条消息的 `expiration` 决定 |
-| Binding | `notification.retry.queue` ↔ `notification.retry` | routing_key = `retry` |
-| Binding | `notification.dlx` → `notification.retry` | fanout 自动绑定 |
+| Queue | `notification.retry.2s.queue` | durable, `x-message-ttl=2000`, `x-dead-letter-exchange = notification.delivery` |
+| Queue | `notification.retry.5s.queue` | durable, `x-message-ttl=5000`, `x-dead-letter-exchange = notification.delivery` |
+| Queue | `notification.retry.10s.queue` | durable, `x-message-ttl=10000`, `x-dead-letter-exchange = notification.delivery` |
+| Queue | `notification.retry.30s.queue` | durable, `x-message-ttl=30000`, `x-dead-letter-exchange = notification.delivery` |
+| Binding | 各 queue ↔ `notification.retry` | routing_key 等于队列对应的时间槽 key（如 `retry.2s`）|
 
 <a id="65-消息格式规范"></a>
 ### 6.5 消息格式规范
@@ -1687,7 +1681,6 @@ flowchart LR
 |--------|------|------|------|
 | `x-trace-id` | string | 追踪 ID，接收层生成，沿链路传播 | 是 |
 | `x-retry-count` | int | 已重试次数（延迟重试时设置） | 否 |
-| `x-original-routing-key` | string | 原始路由键（延迟消息使用） | 延迟消息必填 |
 
 ---
 
@@ -2112,7 +2105,7 @@ sequenceDiagram
 <a id="105-算法测试"></a>
 ### 10.5 算法测试
 
-**测试对象**：不依赖任何外部系统的纯函数（`calculateBackoff`、`judgeResponse`、`resolveField` 等）。
+**测试对象**：不依赖任何外部系统的纯函数（`calculateBackoff`、`resolveField` 等）。
 
 **启动方式**：标准 `go test`，无任何外部依赖。直接调用函数，断言返回值。
 
