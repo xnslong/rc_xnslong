@@ -190,142 +190,89 @@ stateDiagram-v2
 | FAILED | DEAD_LETTER | 响应判定为失败，且 retry_count >= max_attempts - 1 |
 
 <a id="22-表结构-ddl"></a>
-### 2.2 表结构 DDL
+### 2.2 表结构
 
-#### 2.2.1 callers — 调用方表（未来扩展）
+#### 2.2.1 MVP 实体关系图
 
-> MVP 阶段不启用调用方鉴权。此表在第二阶段引入调用方鉴权时启用。
+```mermaid
+erDiagram
+    notifications {
+        uuid        id              PK
+        int         shard_id        "预分片键：id_mod_1024，初始全为0"
+        string      caller_id       "调用方标识（MVP 自由文本，未来指向 callers）"
+        string      idempotent_key  "幂等键，与 caller_id 唯一约束"
+        string      event_type
+        jsonb       payload
+        string      status          "PENDING / DELIVERING / SUCCEEDED / PARTIALLY_FAILED / FAILED"
+        timestamp   created_at
+        timestamp   updated_at
+    }
 
-```sql
-CREATE TABLE callers (
-    id              BIGSERIAL       PRIMARY KEY,
-    caller_id       VARCHAR(64)     NOT NULL,
-    name            VARCHAR(128)    NOT NULL DEFAULT '',
-    api_key_hash    VARCHAR(64)     NOT NULL,           -- SHA-256(api_key)，用于快速认证
-    api_secret_hash VARCHAR(128)    NOT NULL,           -- bcrypt(api_secret)
-    allowed_events  JSONB           NOT NULL DEFAULT '[]',  -- 允许的事件类型列表，[]表示全部
-    rate_limit      JSONB,                              -- 调用方级限流配置，NULL表示不限
-    status          VARCHAR(16)     NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE / DISABLED
-    contact         VARCHAR(256)    NOT NULL DEFAULT '',
-    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    delivery_tasks {
+        uuid        id               PK
+        int         shard_id         "预分片键"
+        uuid        notification_id  "FK: notifications.id"
+        string      vendor_id        "对应配置 vendors/ 目录"
+        string      status           "PENDING / DELIVERING / SUCCEEDED / FAILED / IGNORED / DEAD_LETTER"
+        int         retry_count      "已重试次数（不含首次）"
+        int         max_retries      "从供应商配置继承，含首次"
+        timestamp   next_retry_at    "下次重试时间，Worker 消费时过滤"
+        text        last_error       "摘要级错误信息"
+        timestamp   created_at
+        timestamp   updated_at
+    }
 
-    CONSTRAINT uq_callers_caller_id UNIQUE (caller_id),
-    CONSTRAINT uq_callers_api_key_hash UNIQUE (api_key_hash),
-    CONSTRAINT chk_callers_status CHECK (status IN ('ACTIVE', 'DISABLED'))
-);
+    dead_letter_records {
+        uuid        id                PK
+        uuid        delivery_task_id  "FK: delivery_tasks.id，唯一"
+        uuid        notification_id   "FK: notifications.id"
+        string      vendor_id
+        int         retry_count       "最终重试次数"
+        text        last_error
+        jsonb       last_response     "状态码和 body 截断"
+        timestamp   last_attempt_at
+        string      status            "PENDING / RETRYING / ARCHIVED"
+        timestamp   created_at
+        timestamp   updated_at
+    }
 
-COMMENT ON TABLE callers IS '调用方(业务系统)注册表';
-COMMENT ON COLUMN callers.api_key_hash IS 'API Key 的 SHA-256 哈希，用于认证时快速查找';
-COMMENT ON COLUMN callers.api_secret_hash IS 'API Secret 的 bcrypt 哈希';
-COMMENT ON COLUMN callers.allowed_events IS '允许提交的事件类型列表，["*"]表示全部';
-COMMENT ON COLUMN callers.rate_limit IS '调用方级限流配置: {"tokens_per_second": 100, "burst": 200}';
+    event_schemas {
+        serial      id              PK
+        string      event_type
+        int         version
+        jsonb       schema_def      "JSON Schema (Draft-07), 含 x-format 扩展"
+        text        description
+        string      status          "ACTIVE / DEPRECATED"
+        timestamp   created_at
+        timestamp   updated_at
+    }
+
+    notifications ||--o{ delivery_tasks : "投递"
+    notifications ||--o{ dead_letter_records : "死信"
+    delivery_tasks ||--o| dead_letter_records : "死信"
 ```
 
-#### 2.2.2 notifications — 通知表（MVP）
+#### 2.2.2 未来扩展：callers 表
 
-```sql
-CREATE TABLE notifications (
-    id              UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
-    shard_id        INT             NOT NULL DEFAULT 0,
-    caller_id       VARCHAR(64)     NOT NULL,
-    idempotent_key  VARCHAR(128)    NOT NULL,
-    event_type      VARCHAR(128)    NOT NULL,
-    payload         JSONB           NOT NULL,
-    status          VARCHAR(20)     NOT NULL DEFAULT 'PENDING',
-    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+> MVP 阶段不启用调用方鉴权。此表在第二阶段引入时启用。
 
-    CONSTRAINT uq_notifications_caller_idempotent UNIQUE (caller_id, idempotent_key),
-    CONSTRAINT chk_notifications_status CHECK (status IN (
-        'PENDING', 'DELIVERING', 'SUCCEEDED', 'PARTIALLY_FAILED', 'FAILED'
-    ))
-    -- MVP 阶段无 callers 表，caller_id 作为自由文本字段
-    -- 第二阶段引入调用方管理后添加 FK: REFERENCES callers (caller_id)
-);
+```mermaid
+erDiagram
+    callers {
+        bigserial   id                 PK
+        string      caller_id          唯一
+        string      name
+        string      api_key_hash       "SHA-256(api_key)"
+        string      api_secret_hash    "bcrypt(api_secret)"
+        jsonb       allowed_events     "[*]表示全部"
+        jsonb       rate_limit         "tokens_per_second, burst"
+        string      status             "ACTIVE / DISABLED"
+        string      contact
+        timestamp   created_at
+        timestamp   updated_at
+    }
 
-COMMENT ON TABLE notifications IS '业务系统提交的原始通知';
-COMMENT ON COLUMN notifications.shard_id IS '预分片键: id % 1024，初始阶段全为0';
-COMMENT ON COLUMN notifications.idempotent_key IS '幂等键，与(caller_id)组成唯一约束';
-COMMENT ON COLUMN notifications.payload IS '事件载荷，JSONB 格式';
-```
-
-#### 2.2.3 delivery_tasks — 投递任务表
-
-```sql
-CREATE TABLE delivery_tasks (
-    id                UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
-    shard_id          INT             NOT NULL DEFAULT 0,
-    notification_id   UUID            NOT NULL,
-    vendor_id         VARCHAR(64)     NOT NULL,
-    status            VARCHAR(20)     NOT NULL DEFAULT 'PENDING',
-    retry_count       INT             NOT NULL DEFAULT 0,
-    max_retries       INT             NOT NULL DEFAULT 5,
-    next_retry_at     TIMESTAMPTZ,
-    last_error        TEXT,
-    created_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT chk_delivery_tasks_status CHECK (status IN (
-        'PENDING', 'DELIVERING', 'SUCCEEDED', 'FAILED', 'IGNORED', 'DEAD_LETTER'
-    )),
-    CONSTRAINT fk_delivery_tasks_notification FOREIGN KEY (notification_id)
-        REFERENCES notifications (id)
-);
-
-COMMENT ON TABLE delivery_tasks IS '面向单个供应商的投递任务';
-COMMENT ON COLUMN delivery_tasks.vendor_id IS '供应商标识，与本地配置 vendors/ 目录中的 vendor_id 对应';
-COMMENT ON COLUMN delivery_tasks.retry_count IS '已重试次数(不含首次)';
-COMMENT ON COLUMN delivery_tasks.max_retries IS '最大尝试次数(含首次)，从供应商配置继承';
-COMMENT ON COLUMN delivery_tasks.next_retry_at IS '下次重试时间，Worker 消费时按此字段过滤';
-COMMENT ON COLUMN delivery_tasks.last_error IS '最后一次失败的错误信息(摘要级，完整 attempt 日志走 stdout)';
-```
-
-#### 2.2.4 dead_letter_records — 死信记录表
-
-```sql
-CREATE TABLE dead_letter_records (
-    id                UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
-    delivery_task_id  UUID            NOT NULL,
-    notification_id   UUID            NOT NULL,
-    vendor_id         VARCHAR(64)     NOT NULL,
-    retry_count       INT             NOT NULL,
-    last_error        TEXT            NOT NULL DEFAULT '',
-    last_response     JSONB,                              -- 最后一次响应的关键信息
-    last_attempt_at   TIMESTAMPTZ     NOT NULL,
-    status            VARCHAR(20)     NOT NULL DEFAULT 'PENDING',  -- PENDING / RETRYING / ARCHIVED
-    created_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT uq_dead_letter_records_delivery_task UNIQUE (delivery_task_id),
-    CONSTRAINT fk_dead_letter_records_delivery_task FOREIGN KEY (delivery_task_id)
-        REFERENCES delivery_tasks (id),
-    CONSTRAINT fk_dead_letter_records_notification FOREIGN KEY (notification_id)
-        REFERENCES notifications (id)
-);
-
-COMMENT ON TABLE dead_letter_records IS '死信记录，保留完整的投递历史和关键响应信息';
-COMMENT ON COLUMN dead_letter_records.last_response IS '最后一次响应的状态码和 body(截断)，用于快速排查';
-```
-
-#### 2.2.5 event_schemas — 事件类型 Schema 注册表
-
-```sql
-CREATE TABLE event_schemas (
-    id              SERIAL          PRIMARY KEY,
-    event_type      VARCHAR(128)    NOT NULL,
-    version         INT             NOT NULL DEFAULT 1,
-    schema_def      JSONB           NOT NULL,               -- JSON Schema 定义
-    description     TEXT            NOT NULL DEFAULT '',
-    status          VARCHAR(16)     NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE / DEPRECATED
-    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT uq_event_schemas_type_version UNIQUE (event_type, version)
-);
-
-COMMENT ON TABLE event_schemas IS '事件类型及其 JSON Schema 定义';
-COMMENT ON COLUMN event_schemas.schema_def IS 'JSON Schema (Draft-07) 定义，含 x-format 扩展';
+    callers ||--o{ notifications : "未来 FK"
 ```
 
 > **说明**：`event_schemas` 表在 MVP 中即启用。接收网关在收到提交通知时，根据 `event_type` 加载对应 Schema 校验 payload。
