@@ -33,6 +33,7 @@
   - [4.5 路由规则格式](#45-路由规则格式)
   - [4.6 机密引用语法](#46-机密引用语法)
 - [5. 组件内部设计](#5-组件内部设计)
+  - [5.0 整体架构与组件图](#50-整体架构与组件图)
   - [5.1 接收网关](#51-接收网关)
   - [5.2 路由分发器](#52-路由分发器)
   - [5.3 请求拼装引擎](#53-请求拼装引擎)
@@ -770,7 +771,117 @@ auth:
 <a id="5-组件内部设计"></a>
 ## 5. 组件内部设计
 
-> HLD §5 定义了各核心组件的职责和方案。本章给出组件的内部接口、处理流水线和关键算法。
+> HLD §5 定义了各核心组件的职责和方案，HLD §3.1 给出了模块分层图。本章补充实现级的**组件依赖图**——展示各业务模块、Port 接口和适配层之间的边界关系与依赖方向。
+>
+> §5.0 是本章的全局背景，服务于 §5.1–§5.6 的详细设计。建议先读 §5.0 了解模块边界，再深入各模块的内部细节。
+
+<a id="50-整体架构与组件图"></a>
+### 5.0 整体架构与组件图
+
+#### 5.0.1 UML 组件图
+
+以下组件图表达系统的模块分解、边界划分和 Port 接口定位。
+
+```mermaid
+flowchart TB
+    subgraph BL["业务逻辑层"]
+        direction TB
+        IG["«component» Ingestion Service"]
+        RT["«component» Router"]
+        MP["«component» MappingEngine"]
+        WK["«component» Worker"]
+    end
+
+    subgraph PORT["端口层 / 依赖倒置边界"]
+        CP["«interface» ConfigProvider"]
+        DBCLI["«interface» DBClient"]
+        MQCLI["«interface» MQClient"]
+    end
+
+    subgraph ADAPT["适配层"]
+        FC["FileConfigLoader"]
+        PG["PostgreSQLAdapter"]
+        RMQ["RabbitMQAdapter"]
+    end
+
+    IG -.->|依赖| CP
+    IG -.->|依赖| DBCLI
+    IG -.->|依赖| MQCLI
+
+    RT -.->|依赖| CP
+    RT -.->|依赖| DBCLI
+    RT -.->|依赖| MQCLI
+
+    MP -.->|依赖| CP
+
+    WK -.->|依赖| CP
+    WK -.->|依赖| DBCLI
+    WK -.->|依赖| MQCLI
+
+    CP <--- |实现| FC
+    DBCLI <--- |实现| PG
+    MQCLI <--- |实现| RMQ
+
+    IG ==MQ 触发==> RT
+    RT ==MQ 投递==> WK
+    WK ..->|调用| MP
+```
+
+**图例说明**：
+
+| 连线 | 含义 | 语气 |
+|------|------|------|
+| `-.->` 虚线 | 接口依赖（依赖方 → 接口） | 编译期契约 |
+| `<---` 实线反向 | 接口实现（实现方 → 接口） | 编译期契约 |
+| `==>` 粗实线 | MQ 消息流 | 运行时数据流 |
+| `..->` 点线 | 同进程同步调用 | 运行时调用 |
+
+#### 5.0.2 模块边界与 Port 接口定位
+
+| 模块 | 所属层 | 内部职责 | 外部依赖（通过 Port） | 边界方式 |
+|------|--------|---------|---------------------|---------|
+| Ingestion Service | 业务逻辑 | schema 校验、幂等写入、MQ 触发发布 | ConfigProvider（读 event schema）<br/>DBClient（写 notification）<br/>MQClient（发布触发消息） | 同步 HTTP 请求进入，MQ 消息输出 |
+| Router | 业务逻辑 | 消费触发消息、匹配路由规则、创建 delivery_task | ConfigProvider（读路由规则）<br/>DBClient（写 task、读 notification）<br/>MQClient（发布投递消息） | MQ 消息进入，MQ 消息输出 |
+| MappingEngine | 业务逻辑 | 引用解析（resolveField）、$source 处理、格式转换 | ConfigProvider（读映射规则） | 纯函数，被 Worker 同进程同步调用 |
+| Worker | 业务逻辑 | HTTP 调用、重试判定、死信处理 | ConfigProvider（读供应商配置）<br/>DBClient（更新 task 状态、写死信）<br/>MQClient（发布延迟重试消息） | MQ 消息进入，MQ 消息或 HTTP 调用输出 |
+| FileConfigLoader | 适配层 | 从本地 YAML 文件加载全量配置 | 无（实现 ConfigProvider） | 接口桥接 |
+| PostgreSQLAdapter | 适配层 | pgx 数据库连接与查询 | 无（实现 DBClient） | 接口桥接 |
+| RabbitMQAdapter | 适配层 | amqp091 消息发布 | 无（实现 MQClient） | 接口桥接 |
+
+#### 5.0.3 设计要点
+
+**依赖方向**：
+
+- 业务模块 → Port 接口 → Adapter 实现
+- 业务模块**不直接依赖**任何基础设施（PostgreSQL、RabbitMQ）
+- 适配层**实现** Port 接口，被 `main()` 注入到业务模块
+
+**模块间通信**：
+
+| 上下游 | 通信方式 | 说明 |
+|--------|---------|------|
+| Ingestion → Router | MQ 触发通道（`notification.trigger`） | 异步消息，见 §6.2 |
+| Router → Worker | MQ 投递队列（`notification.delivery`） | 异步消息，见 §6.3 |
+| MappingEngine → Worker（逆向） | 同进程同步调用 | Worker 调用链上的一个步骤，见 §5.4 序列图 |
+| Worker → 供应商 API | HTTP | 外部系统，见 §5.4 |
+
+**模块边界原则**：
+
+1. 所有 Port 接口定义在 `internal/port/` 包中，而非实现所在的包
+2. 业务模块间的唯一异步通道是 MQ，模块间不共享内存状态
+3. 业务模块必须通过 Port 接口访问外部资源，禁止直接导入 Adapter 实现
+4. Port 接口位于业务逻辑层和适配层之间的"依赖倒置边界"——业务逻辑侧依赖接口的语义，适配侧实现接口的行为。接口本身不属于任何一侧，而是两侧共同遵守的契约
+
+#### 5.0.4 与 HLD §3.1 分层图的区别
+
+| | HLD §3.1 分层图 | DD §5.0 组件图 |
+|--|-----------------|---------------|
+| **视角** | 高层职责划分，管理平面 + 核心平面 + 基础设施 | 实现级组件依赖，关注代码层面的边界 |
+| **包含** | 限流熔断、调用方管理、可观测性等管理功能 | 只包含 MVP 实现组件 |
+| **强调** | 分层和层次之间的位置关系 | 依赖倒置边界和 Port 接口定位 |
+| **目标读者** | 架构评审者、跨团队沟通 | 实现开发者、模块划分决策 |
+
+> HLD 图回答"系统分几层、每层有什么"，DD 图回答"模块间怎么依赖、Port 接口在哪"。两者不重复，HLD 是 DD 的输入，DD 是 HLD 到代码的映射。
 
 <a id="51-接收网关"></a>
 ### 5.1 接收网关
@@ -2070,6 +2181,7 @@ graph TD
 | §2 数据模型 | §2 核心实体模型, §4.1.2 存储模型 | 实现级表结构 |
 | §3 API | §5.1 接收网关 | RESTful JSON API 完整定义（MVP 简化版） |
 | §4 配置 | §3.5 配置架构, §4.4 配置存储 | 完整 YAML 文件格式（MVP 本地文件） |
+| §5.0 整体架构与组件图 | §3.1 模块分层图, §5 | 组件依赖图 + Port 接口定位（新增） |
 | §5.1 接收网关 | §5.1 接收网关 | 幂等处理逻辑（MVP 无鉴权） |
 | §5.2 路由分发器 | §5.2 路由分发器 | 事件→供应商映射（MVP 无条件路由） |
 | §5.3 请求拼装 | §5.3 请求拼装 | 结构化映射引擎 |
