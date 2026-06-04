@@ -1,0 +1,3 @@
+event_type: "tc375.each_static"
+routes:
+  - vendor_id: "mapping_vendor"
