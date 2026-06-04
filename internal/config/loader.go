@@ -564,10 +564,10 @@ func extractPayloadRefsRecursive(val any, refs *[]string) {
 	case string:
 		// Find all @{payload:...} occurrences in the string
 		for i := 0; i < len(v); i++ {
-			if v[i] == '@' && i+9 < len(v) && v[i:i+9] == "@{payload:" {
+			if v[i] == '@' && i+10 < len(v) && v[i:i+10] == "@{payload:" {
 				end := strings.Index(v[i:], "}")
 				if end > 0 {
-					ref := v[i+9 : i+end]
+					ref := v[i+10 : i+end]
 					// Only take the first segment for nested paths (e.g. "a.b.c" -> "a")
 					if dot := strings.IndexByte(ref, '.'); dot > 0 {
 						ref = ref[:dot]
@@ -591,10 +591,11 @@ func extractPayloadRefsRecursive(val any, refs *[]string) {
 }
 
 // validateCrossConfig checks for consistency between independently-loaded
-// config items. Failures are logged but do not affect startup.
+// config items. Failures mark the corresponding entry as errored so that
+// runtime lookups return the error. Startup is NOT blocked.
 func (l *Loader) validateCrossConfig() {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
 
 	// 1. Routing rules reference existing vendors
 	for eventType, lv := range l.routingRules {
@@ -603,13 +604,10 @@ func (l *Loader) validateCrossConfig() {
 		}
 		for _, rule := range lv.Value {
 			if _, ok := l.vendorConfigs[rule.VendorID]; !ok {
-				log.Warn().
-					Str("module", "config.loader").
-					Str("event", "validation_error").
-					Str("type", "routing_vendor_not_found").
-					Str("vendor", rule.VendorID).
-					Str("event_type", eventType).
-					Msg("routing rule references non-existent vendor")
+				l.routingRules[eventType] = &LoadedValue[[]*port.RoutingRule]{
+					Error: fmt.Errorf("routing rule references non-existent vendor %q", rule.VendorID),
+				}
+				break
 			}
 		}
 	}
@@ -630,7 +628,6 @@ func (l *Loader) validateCrossConfig() {
 			continue
 		}
 
-		// Get schema properties as a set of field names
 		schemaMap := schemaLV.Value
 		propsRaw, _ := schemaMap["properties"]
 		props, ok := propsRaw.(map[string]any)
@@ -642,14 +639,10 @@ func (l *Loader) validateCrossConfig() {
 		refs := extractPayloadRefs(contract.Request.Body.Template)
 		for _, ref := range refs {
 			if _, exists := props[ref]; !exists {
-				log.Warn().
-					Str("module", "config.loader").
-					Str("event", "validation_error").
-					Str("type", "template_field_not_in_schema").
-					Str("field", ref).
-					Str("event_type", eventType).
-					Str("contract", key).
-					Msg("delivery contract references field not declared in event schema")
+				l.deliveryContracts[key] = &LoadedValue[*deliveryContractFile]{
+					Error: fmt.Errorf("contract references field %q not declared in schema for %q", ref, eventType),
+				}
+				break
 			}
 		}
 	}
@@ -742,12 +735,15 @@ func (l *Loader) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
 	if !ok {
 		return nil, port.ErrNotConfigured
 	}
+	if lv.Error != nil {
+		return nil, lv.Error
+	}
 	// Convert []*port.RoutingRule → []port.RoutingRule
 	rules := make([]port.RoutingRule, len(lv.Value))
 	for i, r := range lv.Value {
 		rules[i] = *r
 	}
-	return rules, lv.Error
+	return rules, nil
 }
 
 // GetEventSchema returns the event schema for the given event type.

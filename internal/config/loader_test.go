@@ -284,15 +284,14 @@ routes:
 	loader, err := config.NewLoader(tmpDir)
 	require.NoError(t, err)
 
-	// Should NOT fail — missing vendors is not fatal
+	// Should NOT fail — validation doesn't block startup
 	err = loader.Load(context.Background())
 	require.NoError(t, err, "Load should not fail when a route references a non-existent vendor")
 
-	// Routing rule should still be present (validation is best-effort)
+	// Route should be marked as errored — not available at runtime
 	rules, err := loader.GetRoutingRules("order.paid")
-	require.NoError(t, err)
-	assert.Len(t, rules, 1)
-	assert.Equal(t, "nonexistent_vendor", rules[0].VendorID)
+	assert.Error(t, err, "route referencing non-existent vendor should be errored")
+	assert.Nil(t, rules)
 }
 
 // TestConfigLoader_Load_Error verifies that Load returns an error when
@@ -361,16 +360,14 @@ request:
 	require.NoError(t, err)
 	require.NotNil(t, loader)
 
-	// Load should NOT fail — validation is best-effort
+	// Load should NOT fail — validation doesn't block startup
 	err = loader.Load(context.Background())
 	require.NoError(t, err, "Load should not fail on template field validation warnings")
 
-	// Delivery spec should be available (validation doesn't affect runtime)
+	// Contract referencing undeclared field should be errored — not available
 	spec, err := loader.GetDeliverySpec("test_vendor", "order.paid")
-	require.NoError(t, err)
-	require.NotNil(t, spec)
-	assert.Contains(t, spec.Mapping.Body.Template, "user_id")
-	assert.Contains(t, spec.Mapping.Body.Template, "bad_field")
+	assert.Error(t, err, "contract referencing undeclared field should be errored")
+	assert.Nil(t, spec)
 }
 
 func mustWriteFile(t *testing.T, path, content string) {

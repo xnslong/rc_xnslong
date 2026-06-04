@@ -91,7 +91,7 @@ request:
 //
 // Verifies that:
 //   - The server starts and accepts notifications despite validation warnings
-//   - Delivery still succeeds — nonexistent_field just resolves to nil in output
+//   - Delivery fails because the contract is marked as errored at startup
 
 // @test-case TC4.3-template_field_validation
 func TestConfig_TemplateFieldValidation(t *testing.T) {

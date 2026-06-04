@@ -1971,7 +1971,7 @@ flowchart TD
 | &emsp;Schema | `events/{biz}/events/{event}.yaml` | 记录错误信息 | 查询该 schema 时返回错误信息 |
 | &emsp;供应商配置 | `vendors/{vendor}/vendor.yaml` | 记录错误信息 | 查询该供应商时返回错误信息 |
 | &emsp;投递契约 | `vendors/{vendor}/{biz}/*.yaml` | 记录错误信息 | 查询该契约时返回错误信息 |
-| **跨配置校验** | 模板字段是否在 schema 中有声明、路由中的供应商是否存在 | 校验失败仅记录错误到对应 entry，不阻塞启动 | 不影响运行时行为 |
+| **跨配置校验** | 模板字段是否在 schema 中有声明、路由中的供应商是否存在 | 校验失败，将该 entry 标记为错误 | 不阻塞启动，对应配置项不可用 |
 
 **注**：步骤 1 的全局性错误（如 `vendors/` 目录不存在）导致系统启动失败，其余步骤不影响系统启动。
 
