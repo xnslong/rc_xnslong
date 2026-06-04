@@ -168,13 +168,15 @@ func (p *WorkerPool) ProcessMessage(ctx context.Context, deliveryTaskID string) 
 	// 3. Get vendor configuration
 	vendorCfg, err := p.deps.Config.GetVendorConfig(task.VendorID)
 	if err != nil {
-		return fmt.Errorf("vendor config not found: %w", err)
+		log.Printf("vendor config unavailable for %s: %v", task.VendorID, err)
+		return p.handleDeadLetter(ctx, task, err.Error())
 	}
 
 	// 4. Get delivery spec (mapping config)
 	spec, err := p.deps.Config.GetDeliverySpec(task.VendorID, task.EventType)
 	if err != nil {
-		return fmt.Errorf("delivery spec not found: %w", err)
+		log.Printf("delivery spec unavailable for %s/%s: %v", task.VendorID, task.EventType, err)
+		return p.handleDeadLetter(ctx, task, err.Error())
 	}
 
 	// 5. Build HTTP request via Engine
