@@ -3,13 +3,20 @@ package ingestion
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"sync"
 )
 
 // schemaValidator validates payloads against JSON Schema definitions.
-type schemaValidator struct{}
+type schemaValidator struct {
+	mu    sync.Mutex
+	cache map[uintptr]*schemaNode // key: pointer to schemaMap
+}
 
 func newSchemaValidator() *schemaValidator {
-	return &schemaValidator{}
+	return &schemaValidator{
+		cache: make(map[uintptr]*schemaNode),
+	}
 }
 
 // validate checks the payload against the given JSON Schema bytes.
@@ -23,18 +30,30 @@ func (v *schemaValidator) validate(schemaDef []byte, payload map[string]any) []V
 }
 
 // validateMap checks the payload against the given JSON Schema map.
-// Temp bridge: map -> JSON -> schemaNode.
-// IT2 adds proper parse-once cache that skips this round-trip.
+// Uses a cache keyed on the schema map's pointer to avoid repeated parsing.
 func (v *schemaValidator) validateMap(schemaMap map[string]any, payload map[string]any) []ValidationError {
-	schemaJSON, err := json.Marshal(schemaMap)
-	if err != nil {
-		return []ValidationError{{Field: "", Message: fmt.Sprintf("invalid schema definition: %v", err)}}
+	key := reflect.ValueOf(schemaMap).Pointer()
+
+	v.mu.Lock()
+	node, ok := v.cache[key]
+	v.mu.Unlock()
+
+	if !ok {
+		schemaJSON, err := json.Marshal(schemaMap)
+		if err != nil {
+			return []ValidationError{{Field: "", Message: fmt.Sprintf("invalid schema definition: %v", err)}}
+		}
+		var parsed schemaNode
+		if err := json.Unmarshal(schemaJSON, &parsed); err != nil {
+			return []ValidationError{{Field: "", Message: fmt.Sprintf("invalid schema definition: %v", err)}}
+		}
+		node = &parsed
+		v.mu.Lock()
+		v.cache[key] = node
+		v.mu.Unlock()
 	}
-	var schema schemaNode
-	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
-		return []ValidationError{{Field: "", Message: fmt.Sprintf("invalid schema definition: %v", err)}}
-	}
-	return validateNode(schema, payload, "payload")
+
+	return validateNode(*node, payload, "payload")
 }
 
 // schemaNode represents a simplified JSON Schema node for MVP validation.
