@@ -1913,89 +1913,183 @@ classDiagram
 <a id="94-配置加载与启动流程"></a>
 ### 9.4 配置加载与启动流程（MVP）
 
+#### 加载流程图
+
 ```mermaid
-sequenceDiagram
-    participant Main as main()
-    participant CL as ConfigLoader
-    participant WP as WorkerPool
-    participant GW as HTTP Gateway
-    participant R as Router
+flowchart TD
+    START(["ConfigLoader.Load()"])
+    
+    subgraph ROUTE["加载路由文件"]
+        ROUTE_DIR["遍历 events/{biz}/route.yaml"]
+        ROUTE_OK{"成功？"}
+        ROUTE_SKIP["log.Warn, 跳过该 biz"]
+        ROUTE_NEXT["继续下一个 biz"]
+    end
 
-    Main->>CL: ① 初始化 ConfigLoader
-    Main->>CL: ② Load() 首次加载配置
-    CL->>CL: 读取本地 YAML 文件
-    CL-->>Main: RuntimeConfig
+    subgraph SCHEMA["加载 Schema 文件"]
+        SCHEMA_DIR["遍历 events/{biz}/events/*.yaml"]
+        SCHEMA_OK{"成功？"}
+        SCHEMA_SKIP["log.Warn, 跳过该 schema"]
+        SCHEMA_NEXT["继续下一个 schema"]
+    end
 
-    Main->>R: ③ 初始化路由分发器
-    Main->>WP: ④ 初始化 WorkerPool（共享池）
-    Main->>GW: ⑤ 初始化 HTTP 网关
-    Main->>GW: ⑥ 启动 HTTP 服务
-    Main->>R: ⑦ 启动 MQ 消费者
+    subgraph VENDOR["加载供应商配置"]
+        VENDOR_DIR["遍历 vendors/{vendor}/vendor.yaml"]
+        VENDOR_OK{"成功？"}
+        VENDOR_SKIP["log.Error, 跳过该 vendor"]
+        VENDOR_NEXT["继续下一个 vendor"]
+    end
 
-    Note over GW,R: 服务就绪，开始处理请求
+    subgraph CONTRACT["加载投递契约"]
+        CONTRACT_DIR["遍历 vendors/{vendor}/{biz}/*.yaml"]
+        CONTRACT_OK{"成功？"}
+        CONTRACT_SKIP["log.Error, 跳过该 contract"]
+        CONTRACT_NEXT["继续下一个 contract"]
+    end
+
+    GLOBAL_OK{"vendors/ 等目录\n不可读？"}
+    FINISH["加载完成，\n部分降级运行"]
+    FATAL["系统启动失败"]
+
+    START --> GLOBAL_OK
+    GLOBAL_OK -- "是" --> FATAL
+    GLOBAL_OK -- "否" --> ROUTE_DIR
+    ROUTE_DIR --> ROUTE_OK
+    ROUTE_OK -- "是" --> ROUTE_NEXT
+    ROUTE_OK -- "否" --> ROUTE_SKIP
+    ROUTE_NEXT -->|遍历结束| SCHEMA_DIR
+    ROUTE_SKIP --> ROUTE_NEXT
+    SCHEMA_DIR --> SCHEMA_OK
+    SCHEMA_OK -- "是" --> SCHEMA_NEXT
+    SCHEMA_OK -- "否" --> SCHEMA_SKIP
+    SCHEMA_NEXT -->|遍历结束| VENDOR_DIR
+    SCHEMA_SKIP --> SCHEMA_NEXT
+    VENDOR_DIR --> VENDOR_OK
+    VENDOR_OK -- "是" --> VENDOR_NEXT
+    VENDOR_OK -- "否" --> VENDOR_SKIP
+    VENDOR_NEXT -->|遍历结束| CONTRACT_DIR
+    VENDOR_SKIP --> VENDOR_NEXT
+    CONTRACT_DIR --> CONTRACT_OK
+    CONTRACT_OK -- "是" --> CONTRACT_NEXT
+    CONTRACT_OK -- "否" --> CONTRACT_SKIP
+    CONTRACT_NEXT -->|遍历结束| FINISH
+    CONTRACT_SKIP --> CONTRACT_NEXT
 ```
 
-**main 启动流程（MVP 伪码）**：
+#### 加载步骤与错误处理
+
+| 步骤 | 加载内容 | 失败处理 | 运行时表现 |
+|------|---------|---------|-----------|
+| 1 | 确认 `vendors/`、`events/` 等顶层目录可读 | — | — |
+| 2 | `events/{biz}/route.yaml` | `log.Warn`，跳过该 biz，继续处理下一个 | `GetRoutingRules(biz.event)` 返回空 |
+| 3 | `events/{biz}/events/{event}.yaml` | `log.Warn`，跳过该 event，继续处理下一个 | `GetEventSchema(event)` 返回空，入站返回 422 EVENT_NOT_FOUND |
+| 4 | `vendors/{vendor}/vendor.yaml` | `log.Error`，跳过该 vendor，不加载其 contracts | `GetVendorConfig(vendor)` 返回 nil, false |
+| 5 | `vendors/{vendor}/{biz}/*.yaml` | `log.Error`，跳过该 contract，继续处理下一个 | `GetDeliverySpec(vendor, event)` 返回 spec，但 Body.Template 为空 |
+
+**注**：步骤 1 的全局性错误（如 `vendors/` 目录不存在）导致系统启动失败，其余步骤不影响系统启动。
+
+#### 启动流程伪码
 
 ```
-main():
-  // 注册系统信号监听：收到 SIGTERM 或 SIGINT 时触发关闭流程
-  注册信号监听(SIGTERM, SIGINT)
+Load(configDir)
+  // Step 1: 确认顶层关键目录可读
+  if vendors/ 目录和 events/ 目录均不存在或不可读:
+    return error("配置目录结构无效")
 
-  // Step 1: 初始化基础设施——数据库连接、消息队列连接、日志系统
-  db  ← 建立 PostgreSQL 连接
-  mq  ← 建立 RabbitMQ 连接
-  logger ← 初始化结构化日志系统
+  // Step 2: 按 biz 加载路由规则，失败不阻塞
+  for each {biz} in events/:
+    routeFile ← events/{biz}/route.yaml
+    if routeFile 解析失败:
+      log.Warn("加载路由文件失败",
+        "biz", biz,
+        "file", routeFile,
+        "error", err)
+      metrics.Inc("config.load.failure", "type", "route", "biz", biz)
+      continue             // 跳过该 biz，不影响其他 biz
+    提取路由规则，加入 runtimeConfig.routingRules
 
-  // Step 2: 从本地 config/ 目录加载全量配置
-  // 配置包括：供应商接入信息、事件 Schema、路由规则、映射规则
-  configLoader ← 创建配置加载器(configDir: "config")
-  success ← configLoader.Load()
-  if not success:
-    logger.Fatal("加载配置文件失败，终止启动")
+  // Step 3: 按 event 加载 Schema，失败不阻塞
+  for each {biz} in events/:
+    for each {event}.yaml in events/{biz}/events/:
+      if 文件解析失败:
+        log.Warn("加载 Schema 文件失败",
+          "event_type", event,
+          "file", 文件路径,
+          "error", err)
+        metrics.Inc("config.load.failure", "type", "schema", "event", event)
+        continue             // 跳过该 schema，不影响其他 event
 
-  // Step 3: 构造接收层——通知提交通道的同步入口
-  ingestionSvc     ← 创建 IngestionService(configLoader, db, mq, logger)
-  ingestionHandler ← 创建 HTTP Handler(ingestionSvc)
+  // Step 4: 按 vendor 加载供应商基础配置，失败跳过该 vendor
+  for each {vendor} in vendors/:
+    vendorFile ← vendors/{vendor}/vendor.yaml
+    if vendorFile 解析失败:
+      log.Error("加载供应商配置失败",
+        "vendor", vendor,
+        "file", vendorFile,
+        "error", err)
+      metrics.Inc("config.load.failure", "type", "vendor", "vendor", vendor)
+      continue             // 跳过该 vendor，不加载其 contracts
 
-  // Step 4: 在后台异步启动路由分发器
-  router ← 创建 Dispatcher(configLoader, db, mq, logger)
-  spawn router.Start(ctx)
+  // Step 5: 按 contract 加载投递契约，失败跳过该 contract
+  for each {vendor} in vendors/:
+    for each {biz}/*.yaml in vendors/{vendor}/{biz}/:
+      if 文件解析失败:
+        log.Error("加载投递契约失败",
+          "vendor", vendor,
+          "event_type", event,
+          "file", 文件路径,
+          "error", err)
+        metrics.Inc("config.load.failure", "type", "contract", "vendor", vendor, "event", event)
+        continue             // 跳过该 contract
 
-  // Step 5: 在后台异步启动 Worker 池（共享池，并发数 = 10）
-  workerPool ← 创建 WorkerPool(
-    concurrency: 10, configLoader, db, mq, logger
-  )
-  spawn workerPool.Start(ctx)
+  记录加载结果概览日志：
+    log.Info("配置加载完成",
+      "routing_rules_count", count(routingRules),
+      "vendor_count", count(vendorConfigs),
+      "contract_count", count(deliveryContracts),
+      "schema_count", count(eventSchemas),
+      "degraded_biz", degradedBizList,
+      "degraded_vendors", degradedVendorList)
 
-  // Step 6: 在后台异步启动 HTTP 服务，监听 8080 端口
-  httpServer ← 创建 HTTP 服务器(
-    addr: ":8080",
-    routes: {
-      POST /api/v1/notifications           → ingestionHandler.Submit
-      GET  /api/v1/notifications/{id}      → ingestionHandler.GetNotification
-    }
-  )
-  spawn httpServer.ListenAndServe()
-
-  // Step 7: 主协程在此阻塞等待退出信号
-  waitSignal()
-  logger.Info("收到退出信号，开始优雅关闭……")
-
-  // Step 8: 并发关闭 HTTP 和 Worker
-  // 两者关闭期间 MQ、DB 保持可用——正在处理的请求还需要写 DB 和发 MQ
-  shutdownCtx ← 带超时的上下文(30s)
-  并发执行:
-    httpServer.Shutdown(shutdownCtx)  // 停止接收新请求，等待已到达的完成
-    workerPool.Stop(shutdownCtx)      // 停止消费新 MQ 消息，等待当前投递完成
-  等待所有关闭完成（或超时）
-
-  // Step 9: 两路均完成后，关闭底层连接
-  mq.Close()
-  db.Close()
+  return nil               // 即使部分失败，也不阻塞系统启动
 ```
 
-<a id="95-优雅关闭"></a>
+#### 降级运行状态的行为
+
+当部分配置加载失败时，系统处于降级运行状态，各组件的行为如下：
+
+| 组件 | 正常状态 | 降级状态 |
+|------|---------|---------|
+| **Ingestion Service** | 校验 payload → 写入 DB → 发布触发消息 | Schema 不存在时返回 422 EVENT_NOT_FOUND；Schema 正常的事件不受影响 |
+| **Router** | 匹配路由规则 → 创建 delivery_task | 路由规则为空时，创建 0 个 task，notification 终态变为 FAILED |
+| **Worker** | 获取 VendorConfig + DeliverySpec → 构造请求 → 投递 | VendorConfig 不存在时 task 进 DEAD_LETTER；DeliverySpec 无 template 时 task 进 DEAD_LETTER |
+| **Mapping Engine** | 按 template 映射 payload | 无 template 时返回错误，由 Worker 处理为 DEAD_LETTER |
+
+#### 指标打点
+
+配置加载完成后，打点以下指标：
+
+| 指标 | 类型 | 标签 | 说明 |
+|------|------|------|------|
+| `config.load.success` | Counter | — | 总成功数（全量加载完成） |
+| `config.load.failure` | Counter | type={route,schema,vendor,contract}, biz, vendor, event | 按类型统计的失败数 |
+| `config.load.degraded` | Gauge | — | 1 = 存在降级，0 = 正常 |
+| `config.route.count` | Gauge | — | 已加载路由规则数 |
+| `config.vendor.count` | Gauge | — | 已加载供应商数 |
+
+#### 结构化日志规范
+
+每次加载失败输出一条 ERROR 或 WARN 级日志：
+
+| 字段 | 类型 | 示例 | 说明 |
+|------|------|------|------|
+| `module` | string | "config.loader" | 所属模块 |
+| `event` | string | "load_route_error" | 事件类型 |
+| `file` | string | "events/order/route.yaml" | 出错文件路径 |
+| `scope` | string | "biz:order" 或 "vendor:crm_system" | 影响范围 |
+| `error` | string | "yaml: line 7: did not find expected key" | 错误原因 |
+| `degraded` | bool | true | 是否触发了降级启动 |
+
 ### 9.5 优雅关闭
 
 系统收到 SIGTERM/SIGINT 信号时执行以下关闭序列：
