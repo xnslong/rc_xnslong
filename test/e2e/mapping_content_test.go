@@ -86,6 +86,14 @@ response_judgment:
     vendor_id: "mapping_vendor"
   - event_type: "tc375.each_not_array"
     vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_primitive"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_primitive_with_type"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_primitive_with_format"
+    vendor_id: "mapping_vendor"
+  - event_type: "tc375.each_primitive_empty"
+    vendor_id: "mapping_vendor"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "routing_rules.yaml"), []byte(routingYAML), 0644))
 
@@ -96,6 +104,8 @@ response_judgment:
 		"tc375.each_basic", "tc375.each_with_format", "tc375.each_with_type",
 		"tc375.each_static", "tc375.each_nested", "tc375.each_payload_ref",
 		"tc375.each_empty", "tc375.each_not_array",
+		"tc375.each_primitive", "tc375.each_primitive_with_type",
+		"tc375.each_primitive_with_format", "tc375.each_primitive_empty",
 	}
 	for _, eventType := range allEventTypes {
 		schemaYAML := fmt.Sprintf(`event_type: %q
@@ -326,6 +336,62 @@ request:
           product_id: "@{item:id}"
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_not_array.yaml"), []byte(mappingEachNotArray), 0644))
+
+	// TC3.7-each_primitive: primitive array with @{item}
+	mappingEachPrimitive := `event_type: "tc375.each_primitive"
+request:
+  body:
+    type: mapping
+    template:
+      items_mapped:
+        $source: "@{payload:produce_list}"
+        $each:
+          product: "@{item}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_primitive.yaml"), []byte(mappingEachPrimitive), 0644))
+
+	// TC3.7-each_primitive_with_type: primitive array with $type
+	mappingEachPrimitiveWithType := `event_type: "tc375.each_primitive_with_type"
+request:
+  body:
+    type: mapping
+    template:
+      items_mapped:
+        $source: "@{payload:produce_list}"
+        $each:
+          product:
+            $source: "@{item}"
+            $type: string
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_primitive_with_type.yaml"), []byte(mappingEachPrimitiveWithType), 0644))
+
+	// TC3.7-each_primitive_with_format: primitive array with $format
+	mappingEachPrimitiveWithFormat := `event_type: "tc375.each_primitive_with_format"
+request:
+  body:
+    type: mapping
+    template:
+      items_mapped:
+        $source: "@{payload:timestamps}"
+        $each:
+          date:
+            $source: "@{item}"
+            $format: "2006-01-02"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_primitive_with_format.yaml"), []byte(mappingEachPrimitiveWithFormat), 0644))
+
+	// TC3.7-each_primitive_empty: empty primitive array
+	mappingEachPrimitiveEmpty := `event_type: "tc375.each_primitive_empty"
+request:
+  body:
+    type: mapping
+    template:
+      items_mapped:
+        $source: "@{payload:produce_list}"
+        $each:
+          product: "@{item}"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_primitive_empty.yaml"), []byte(mappingEachPrimitiveEmpty), 0644))
 
 	return tmpDir
 }
@@ -915,4 +981,159 @@ func TestMapping_EachNotArray(t *testing.T) {
 	// engine fails before making any HTTP call.
 	assert.Empty(t, suite.MockVendors["mapping_vendor"].Requests(),
 		"vendor should not receive any request when $each source is not an array")
+}
+
+// ---------------------------------------------------------------------------
+// TC3.7-each_primitive — 原始值数组映射 @{item}
+// ---------------------------------------------------------------------------
+
+// @test-case TC3.7-each_primitive
+func TestMapping_EachPrimitive(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_primitive",
+		"idempotent_key": "tc375-each-primitive-1",
+		"payload": {
+			"produce_list": [1, 2, 3]
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{
+		map[string]any{"product": float64(1)},
+		map[string]any{"product": float64(2)},
+		map[string]any{"product": float64(3)},
+	}
+	assert.Equal(t, expected, gotBody["items_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_primitive_with_type
+func TestMapping_EachPrimitiveWithType(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_primitive_with_type",
+		"idempotent_key": "tc375-each-primitive-type-1",
+		"payload": {
+			"produce_list": [1, 2, 3]
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{
+		map[string]any{"product": "1"},
+		map[string]any{"product": "2"},
+		map[string]any{"product": "3"},
+	}
+	assert.Equal(t, expected, gotBody["items_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_primitive_with_format
+func TestMapping_EachPrimitiveWithFormat(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_primitive_with_format",
+		"idempotent_key": "tc375-each-primitive-format-1",
+		"payload": {
+			"timestamps": [1716518400, 1716604800]
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{
+		map[string]any{"date": "2024-05-24"},
+		map[string]any{"date": "2024-05-25"},
+	}
+	assert.Equal(t, expected, gotBody["items_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
+}
+
+// @test-case TC3.7-each_primitive_empty
+func TestMapping_EachPrimitiveEmpty(t *testing.T) {
+	projectRoot := getProjectRootMapping()
+	configDir := createMappingTestConfig(t)
+
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+	require.NoError(t, err)
+	defer suite.TearDownSuite()
+
+	mv := suite.MockVendors["mapping_vendor"]
+
+	body := `{
+		"event": "tc375.each_primitive_empty",
+		"idempotent_key": "tc375-each-primitive-empty-1",
+		"payload": {
+			"produce_list": []
+		}
+	}`
+
+	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+	req := mv.WaitRequest(10 * time.Second)
+	require.NotNil(t, req, "mapping_vendor should receive the request")
+
+	var gotBody map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+	expected := []any{}
+	assert.Equal(t, expected, gotBody["items_mapped"])
+
+	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "SUCCEEDED", status)
 }
