@@ -23,10 +23,12 @@ type routingRuleItem struct {
 	VendorID  string `yaml:"vendor_id"`
 }
 
-// bizRouteFile is the YAML representation of events/{biz}/route.yaml.
-type bizRouteFile struct {
-	Biz   string            `yaml:"biz"`
-	Rules []routingRuleItem `yaml:"rules"`
+// routesFile is the YAML representation of events/{biz}/routes/{event}.yaml.
+type routesFile struct {
+	EventType string `yaml:"event_type"`
+	Routes    []struct {
+		VendorID string `yaml:"vendor_id"`
+	} `yaml:"routes"`
 }
 
 // vendorConfigFile is the YAML representation of a vendor config file
@@ -87,6 +89,15 @@ type eventSchemaFile struct {
 	Description string         `yaml:"description"`
 	Version     int            `yaml:"version"`
 	Schema      map[string]any `yaml:"schema"`
+}
+
+// LoadedValue wraps a config value with its load error.
+// Value is nil when Error != nil; Error is nil when load succeeded.
+// This lets consumers answer "is this item available?" from one lookup
+// instead of checking separate error maps.
+type LoadedValue[T any] struct {
+	Value T
+	Error error
 }
 
 // ---- Loader ----
@@ -213,7 +224,7 @@ func (l *Loader) loadBizRoute(path string) error {
 		return fmt.Errorf("reading file %q: %w", path, err)
 	}
 
-	var file bizRouteFile
+	var file routesFile
 	if err := yaml.Unmarshal(data, &file); err != nil {
 		return fmt.Errorf("parsing %q: %w", path, err)
 	}
@@ -221,10 +232,10 @@ func (l *Loader) loadBizRoute(path string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	for _, item := range file.Rules {
+	for _, route := range file.Routes {
 		l.routingRules = append(l.routingRules, port.RoutingRule{
-			EventType: item.EventType,
-			VendorID:  item.VendorID,
+			EventType: file.EventType,
+			VendorID:  route.VendorID,
 		})
 	}
 

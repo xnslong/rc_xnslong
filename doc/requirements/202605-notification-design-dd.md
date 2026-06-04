@@ -554,9 +554,10 @@ POST   /api/v1/admin/config/reload                   # 手动触发配置重载
 config/                                   # 配置文件根目录
 ├── events/                               # 事件 Schema 定义（按业务方组织）
 │   └── {biz}/
-│       ├── route.yaml                    #   路由授权声明（事件→供应商）
-│       └── events/
-│           └── {biz_event}.yaml          #     Schema 定义
+│       ├── events/
+│       │   └── {biz_event}.yaml          #     Schema 定义
+│       └── routes/
+│           └── {biz_event}.yaml          #     路由授权声明（每事件独立文件）
 └── vendors/                              # 供应商接入配置（按供应商组织）
     └── {vendor}/
         ├── vendor.yaml                   #   供应商接入信息（URL、鉴权、签名等）
@@ -724,25 +725,24 @@ request:
 <a id="45-路由规则格式"></a>
 ### 4.5 路由规则格式（MVP）
 
-路由授权声明按业务方组织在 `events/{biz}/route.yaml` 中：
+路由授权按事件类型独立文件，存放在 `events/{biz}/routes/{event}.yaml` 中。每个文件包含 `event_type` 自声明，与文件名互相印证：
 
 ```yaml
-# events/order/route.yaml
-biz: "order"
-rules:
-  # order.paid → [crm_system, ad_platform]
-  - event_type: "order.paid"
-    vendor_id: "crm_system"
-
-  - event_type: "order.paid"
-    vendor_id: "ad_platform"
-
-  # order.refund → [crm_system]
-  - event_type: "order.refund"
-    vendor_id: "crm_system"
+# events/order/routes/order.paid.yaml
+event_type: "order.paid"
+routes:
+  - vendor_id: "crm_system"
+  - vendor_id: "ad_platform"
 ```
 
-> **未来扩展**：第二阶段引入条件路由和灰度控制，支持 `condition: "payload.amount > 10000"` 语法，使用 expr 库做轻量表达式评估。
+```yaml
+# events/order/routes/order.refund.yaml
+event_type: "order.refund"
+routes:
+  - vendor_id: "crm_system"
+```
+
+> `event_type` 自声明与文件名双重确认，用于校验和自文档化。加载时优先以文件声明的 `event_type` 为准，文件名仅作为目录划分依据。
 
 <a id="46-机密引用语法"></a>
 ### 4.6 机密引用语法（未来扩展）
@@ -1927,7 +1927,7 @@ flowchart TD
     GLOBAL_OK -- "否" --> JOIN
 
     subgraph ROUTE["加载路由文件"]
-        R["对每个 biz：\n加载 route.yaml\n- 成功 → 记录路由规则\n- 失败 → 记录错误信息"]
+        R["对每个 biz：\n加载 routes/*.yaml\n- 成功 → 记录路由规则（按 event type）\n- 失败 → 记录错误信息"]
     end
 
     subgraph SCHEMA["加载 Schema"]
@@ -1946,7 +1946,7 @@ flowchart TD
         CHECK["校验项（独立阶段）：\n- 模板字段是否在 schema 中有声明\n- 路由中的供应商是否存在\n\n校验失败仅记录错误，不阻塞启动"]
     end
 
-    FINISH["加载完成，\n部分降级运行"]
+    FINISH["加载完成，\n部分可用"]
 
     JOIN --> R
     JOIN --> S
@@ -1967,7 +1967,7 @@ flowchart TD
 |------|---------|---------|-----------|
 | 前置检查 | 确认 `vendors/`、`events/` 等顶层目录可读 | 不可读 → 启动失败 | — |
 | **配置加载**（以下四条独立并行） | | | |
-| &emsp;路由文件 | `events/{biz}/route.yaml` | 记录错误信息 | 该事件类型无路由规则 |
+| &emsp;路由文件 | `events/{biz}/routes/*.yaml` | 记录错误信息 | 该事件类型无路由规则 |
 | &emsp;Schema | `events/{biz}/events/{event}.yaml` | 记录错误信息 | 查询该 schema 时返回错误信息 |
 | &emsp;供应商配置 | `vendors/{vendor}/vendor.yaml` | 记录错误信息 | 查询该供应商时返回错误信息 |
 | &emsp;投递契约 | `vendors/{vendor}/{biz}/*.yaml` | 记录错误信息 | 查询该契约时返回错误信息 |
@@ -1988,9 +1988,10 @@ Load(configDir)
   //
   // ── 路由文件 ──
   for each {biz} in events/:
-    加载 route.yaml
-    - 成功 → 记录路由规则
-    - 失败 → 记录错误信息
+    for each {event}.yaml in events/{biz}/routes/:
+      加载路由 YAML
+      - 成功 → 按 event type 记录路由规则
+      - 失败 → 记录错误信息
 
   // ── Schema 定义 ──
   for each {biz} in events/:
@@ -2013,7 +2014,7 @@ Load(configDir)
       - 失败 → 记录错误信息
 
   // Step 6: 校验各配置间的引用一致性
-  // (不影响系统启动，失败不降级，仅记录错误到对应 entry)
+  // (不影响系统启动，失败不阻塞，仅记录错误到对应 entry)
   // - template 字段是否在 schema 中有声明
   // - 路由中的供应商是否存在
   // 此步骤可独立于加载流程，后续也可通过管理接口手动触发
@@ -2028,11 +2029,11 @@ Load(configDir)
   return nil               // 即使部分失败，也不阻塞系统启动
 ```
 
-#### 降级运行状态的行为
+#### 部分可用状态的行为
 
-当部分配置加载失败时，系统处于降级运行状态，各组件的行为如下：
+当部分配置加载失败时，系统处于部分可用状态，各组件的行为如下：
 
-| 组件 | 正常状态 | 降级状态 |
+| 组件 | 正常状态 | 部分可用状态 |
 |------|---------|---------|
 | **Ingestion Service** | 校验 payload → 写入 DB → 发布触发消息 | Schema 加载失败时返回 422，error body 可区分"未配置"和"加载失败"；Schema 正常的事件不受影响 |
 | **Router** | 匹配路由规则 → 创建 delivery_task | 路由规则为空时，创建 0 个 task，notification 终态变为 FAILED |
@@ -2047,7 +2048,7 @@ Load(configDir)
 |------|------|------|------|
 | `config.load.success` | Counter | — | 总成功数（全量加载完成） |
 | `config.load.failure` | Counter | type={route,schema,vendor,contract}, biz, vendor, event | 按类型统计的失败数 |
-| `config.load.degraded` | Gauge | — | 1 = 存在降级，0 = 正常 |
+| `config.load.partial` | Gauge | — | 1 = 存在部分失败，0 = 全部正常 |
 | `config.route.count` | Gauge | — | 已加载路由规则数 |
 | `config.vendor.count` | Gauge | — | 已加载供应商数 |
 
@@ -2059,10 +2060,10 @@ Load(configDir)
 |------|------|------|------|
 | `module` | string | "config.loader" | 所属模块 |
 | `event` | string | "load_route_error" | 事件类型 |
-| `file` | string | "events/order/route.yaml" | 出错文件路径 |
-| `scope` | string | "biz:order" 或 "vendor:crm_system" | 影响范围 |
+| `file` | string | "events/order/routes/order.paid.yaml" | 出错文件路径 |
+| `scope` | string | "event:order.paid" 或 "vendor:crm_system" | 影响范围 |
 | `error` | string | "yaml: line 7: did not find expected key" | 错误原因 |
-| `degraded` | bool | true | 是否触发了降级启动 |
+| `partial` | bool | true | 配置加载是否部分完成 |
 
 ### 9.5 优雅关闭
 
@@ -2303,3 +2304,21 @@ graph TD
 - 数据源应通过独立键名隔离，而非 merge 共享同一命名空间。这样做不仅能避免键名冲突，也为未来扩展新数据源提供了零改动的接口。
 
 **结论**：去掉 `resolveString`，`resolveField` 成为唯一的 `@{}` 引用替换入口。`resolveSourceDirective` 作为 `$source` 的统一入口，内部判断是否含 `$each` 后分派数组遍历或单值处理。`resolveNode` 的第二个参数改为 `ctx = {payload: 原始数据}`，`$each` 遍历时扩展为 `{...ctx, item: 当前元素}`。整体算法从 7 个精简为 5 个，调用关系从 12 条边简化为 8 条边。
+
+### B.3 配置加载失败的错误信息应该在运行时持续报出还是仅作为一次性启动日志？（2026-06-04）
+
+**问题**：配置加载失败的根因（YAML 解析错误、文件缺失等），应该在运行时通过每次失败的投递持续报出，还是仅在启动时作为一次性日志打印即可？
+
+**关注点**：
+
+- **原始设计假设错误感知是一次性的**：DD §9.4 设计边界容错时，设计的重心在 Load() 函数内部的容错逻辑——"哪个文件加载失败了、影响范围多大"。错误信息通过结构化日志在启动阶段输出一次，指标层面通过 `config.load.partial` gauge 持持续暴露"系统处于部分可用状态"的事实。这个设计隐含了一个假设：运维人员在系统启动后短期内就会注意到部分可用告警，并去修复配置。错误信息只需要在产生的那一刻被记录就够了，不需要在运行时持续传播。
+
+- **这个假设在真实运维场景下不成立**：生产环境中，一次部署可能涉及数百条日志行，启动时的配置加载错误日志很快被后续的"正常业务日志"淹没。`config.load.partial` gauge 依赖开发者自行在 dashbaord 上配置告警——如果没配，部分可用状态可能持续数小时无人发现。在这段时间内，Worker 每次投递失败的日志都是"vendor config not found: crm_system"，这是**症状**而非**根因**——运维人员从"crm_system 不断 DEAD_LETTER"这条线索出发排查时，没有任何路径能回溯到"6 小时前 crm_system 的 vendor.yaml 第 7 行 YAML 解析失败"这个根因。启动阶段和运行阶段的错误信息在时间上断裂了。
+
+- **接口签名放大了这个断裂**：`(*T, bool)` 的 `bool` 语义是"不存在"——它混淆了"从未配置"和"加载失败"两个状态。Worker 收到 `false` 后不知道是前者（可能是预期行为，WARN 即可）还是后者（应该持续 ERROR 报出根因）。如果接口返回的是 `(*T, error)`，调用者可以通过 `errors.Is(err, ErrNotConfigured)` 精确区分两类"不可用"，并在"加载失败"场景下持续输出加载时的根因错误。
+
+- **为什么当初没有选择 `(*T, error)`**: DD §9.4 制定时，设计者对接口的定位是"配置存放处的只读查询接口"——`GetVendorConfig(id)` 就是"查询这个 ID 在不在配置里"，类似 `map[key]` 的 lookip 语义。在这个定位下，`(*T, bool)` 是自然的选择，类似 Go 标准库的 `m[key]` 返回值。至于"配置为什么不在"这个元信息，设计者认为那是加载阶段的事情，应该在 Load() 完成时就解决，不要拖到运行时。这个判断在"全有或全无"的启动模式下是对的（反正 Load 失败系统也不会启动），但在"边界容错"的场景下就错了——加载时没能解决的错误，运行时必须能持续报出。
+
+**哲学**：配置错误的有用性取决于它出现在**错误造成的影响发生时**，而非**错误产生时**。启动时的错误日志和运行时的投递失败日志在时间上是断开的——运维排查时只会看到后者。如果系统运行时持续暴露一个不可修复的配置错误（需要人工修复），那么每次暴露该错误时都应该携带根因，而不是让运维人员去翻阅启动日志的"历史档案"。接口设计应为调用者提供精确区分"预期不存在"和"加载失败"的能力，因为两者的运维响应截然不同。
+
+**结论**：`ConfigProvider` 接口的 `GetVendorConfig`、`GetDeliverySpec`、`GetEventSchema` 方法签名从 `(*T, bool)` 改为 `(*T, error)`，新增 `var ErrNotConfigured = errors.New("config not configured")` sentinel error。Loader 内部将加载失败时的根因信息保存在 `loadErrors` map 中，`Get*` 方法在遇到因加载失败而不存在的配置时，返回包含根因的 error。

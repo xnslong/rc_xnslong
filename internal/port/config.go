@@ -1,5 +1,10 @@
 package port
 
+import "errors"
+
+// ErrNotConfigured is returned when a requested configuration is not found.
+var ErrNotConfigured = errors.New("config not configured")
+
 // VendorConfig holds vendor-level settings.
 // Judgment is the vendor-wide default; per-event-type override via DeliverySpec.
 type VendorConfig struct {
@@ -83,8 +88,8 @@ type DeliverySpec struct {
 
 // ConfigProvider is the central configuration accessor.
 type ConfigProvider interface {
-	GetVendorConfig(vendorID string) (*VendorConfig, bool)
-	GetDeliverySpec(vendorID, eventType string) (*DeliverySpec, bool)
-	GetRoutingRules(eventType string) []RoutingRule
-	GetEventSchema(eventType string) ([]byte, bool)
+	GetVendorConfig(vendorID string) (*VendorConfig, error)
+	GetDeliverySpec(vendorID, eventType string) (*DeliverySpec, error)
+	GetRoutingRules(eventType string) ([]RoutingRule, error)
+	GetEventSchema(eventType string) (map[string]any, error)
 }
