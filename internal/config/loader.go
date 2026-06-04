@@ -319,16 +319,19 @@ func (l *Loader) loadVendorsDir(vendorsDir string) {
 
 // loadVendorConfig parses a vendor YAML file and stores the result.
 func (l *Loader) loadVendorConfig(path string) {
+	// The immediate parent directory name is the vendor_id.
+	vendorID := filepath.Base(filepath.Dir(path))
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		l.recordError("vendor", filepath.Dir(path), path,
+		l.recordError("vendor", vendorID, path,
 			fmt.Errorf("reading file: %w", err))
 		return
 	}
 
 	var file vendorConfigFile
 	if err := yaml.Unmarshal(data, &file); err != nil {
-		l.recordError("vendor", filepath.Dir(path), path,
+		l.recordError("vendor", vendorID, path,
 			fmt.Errorf("parsing YAML: %w", err))
 		return
 	}
