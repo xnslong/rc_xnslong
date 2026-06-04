@@ -1918,73 +1918,60 @@ classDiagram
 ```mermaid
 flowchart TD
     START(["ConfigLoader.Load()"])
-    
-    subgraph ROUTE["加载路由文件"]
-        ROUTE_DIR["遍历 events/{biz}/route.yaml"]
-        ROUTE_OK{"成功？"}
-        ROUTE_SKIP["log.Warn, 跳过该 biz"]
-        ROUTE_NEXT["继续下一个 biz"]
-    end
-
-    subgraph SCHEMA["加载 Schema 文件"]
-        SCHEMA_DIR["遍历 events/{biz}/events/*.yaml"]
-        SCHEMA_OK{"成功？"}
-        SCHEMA_SKIP["log.Warn, 跳过该 schema"]
-        SCHEMA_NEXT["继续下一个 schema"]
-    end
-
-    subgraph VENDOR["加载供应商配置"]
-        VENDOR_DIR["遍历 vendors/{vendor}/vendor.yaml"]
-        VENDOR_OK{"成功？"}
-        VENDOR_SKIP["log.Error, 跳过该 vendor"]
-        VENDOR_NEXT["继续下一个 vendor"]
-    end
-
-    subgraph CONTRACT["加载投递契约"]
-        CONTRACT_DIR["遍历 vendors/{vendor}/{biz}/*.yaml"]
-        CONTRACT_OK{"成功？"}
-        CONTRACT_SKIP["log.Error, 跳过该 contract"]
-        CONTRACT_NEXT["继续下一个 contract"]
-    end
-
     GLOBAL_OK{"vendors/ 等目录\n不可读？"}
-    FINISH["加载完成，\n部分降级运行"]
     FATAL["系统启动失败"]
+    JOIN(( ))
 
     START --> GLOBAL_OK
     GLOBAL_OK -- "是" --> FATAL
-    GLOBAL_OK -- "否" --> ROUTE_DIR
-    ROUTE_DIR --> ROUTE_OK
-    ROUTE_OK -- "是" --> ROUTE_NEXT
-    ROUTE_OK -- "否" --> ROUTE_SKIP
-    ROUTE_NEXT -->|遍历结束| SCHEMA_DIR
-    ROUTE_SKIP --> ROUTE_NEXT
-    SCHEMA_DIR --> SCHEMA_OK
-    SCHEMA_OK -- "是" --> SCHEMA_NEXT
-    SCHEMA_OK -- "否" --> SCHEMA_SKIP
-    SCHEMA_NEXT -->|遍历结束| VENDOR_DIR
-    SCHEMA_SKIP --> SCHEMA_NEXT
-    VENDOR_DIR --> VENDOR_OK
-    VENDOR_OK -- "是" --> VENDOR_NEXT
-    VENDOR_OK -- "否" --> VENDOR_SKIP
-    VENDOR_NEXT -->|遍历结束| CONTRACT_DIR
-    VENDOR_SKIP --> VENDOR_NEXT
-    CONTRACT_DIR --> CONTRACT_OK
-    CONTRACT_OK -- "是" --> CONTRACT_NEXT
-    CONTRACT_OK -- "否" --> CONTRACT_SKIP
-    CONTRACT_NEXT -->|遍历结束| FINISH
-    CONTRACT_SKIP --> CONTRACT_NEXT
+    GLOBAL_OK -- "否" --> JOIN
+
+    subgraph ROUTE["加载路由文件"]
+        R["对每个 biz：\n加载 route.yaml\n- 成功 → 记录路由规则\n- 失败 → 记录错误信息"]
+    end
+
+    subgraph SCHEMA["加载 Schema"]
+        S["对每个 schema 文件：\n加载 schema YAML\n- 成功 → 记录 schema 配置\n- 失败 → 记录错误信息"]
+    end
+
+    subgraph VENDOR["加载供应商配置"]
+        V["对每个 vendor：\n加载 vendor.yaml\n- 成功 → 记录供应商配置\n- 失败 → 记录错误信息"]
+    end
+
+    subgraph CONTRACT["加载投递契约"]
+        C["对每个 contract 文件：\n加载 YAML\n- 成功 → 记录投递契约配置\n- 失败 → 记录错误信息"]
+    end
+
+    subgraph VALIDATE["校验跨配置一致性"]
+        CHECK["校验项（独立阶段）：\n- 模板字段是否在 schema 中有声明\n- 路由中的供应商是否存在\n\n校验失败仅记录错误，不阻塞启动"]
+    end
+
+    FINISH["加载完成，\n部分降级运行"]
+
+    JOIN --> R
+    JOIN --> S
+    JOIN --> V
+    JOIN --> C
+
+    R --> CHECK
+    S --> CHECK
+    V --> CHECK
+    C --> CHECK
+
+    CHECK --> FINISH
 ```
 
 #### 加载步骤与错误处理
 
-| 步骤 | 加载内容 | 失败处理 | 运行时表现 |
+| 阶段 | 加载内容 | 失败处理 | 运行时表现 |
 |------|---------|---------|-----------|
-| 1 | 确认 `vendors/`、`events/` 等顶层目录可读 | — | — |
-| 2 | `events/{biz}/route.yaml` | `log.Warn`，跳过该 biz，继续处理下一个 | `GetRoutingRules(biz.event)` 返回空 |
-| 3 | `events/{biz}/events/{event}.yaml` | `log.Warn`，跳过该 event，继续处理下一个 | `GetEventSchema(event)` 返回空，入站返回 422 EVENT_NOT_FOUND |
-| 4 | `vendors/{vendor}/vendor.yaml` | `log.Error`，跳过该 vendor，不加载其 contracts | `GetVendorConfig(vendor)` 返回 nil, false |
-| 5 | `vendors/{vendor}/{biz}/*.yaml` | `log.Error`，跳过该 contract，继续处理下一个 | `GetDeliverySpec(vendor, event)` 返回 spec，但 Body.Template 为空 |
+| 前置检查 | 确认 `vendors/`、`events/` 等顶层目录可读 | 不可读 → 启动失败 | — |
+| **配置加载**（以下四条独立并行） | | | |
+| &emsp;路由文件 | `events/{biz}/route.yaml` | 记录错误信息 | 该事件类型无路由规则 |
+| &emsp;Schema | `events/{biz}/events/{event}.yaml` | 记录错误信息 | 查询该 schema 时返回错误信息 |
+| &emsp;供应商配置 | `vendors/{vendor}/vendor.yaml` | 记录错误信息 | 查询该供应商时返回错误信息 |
+| &emsp;投递契约 | `vendors/{vendor}/{biz}/*.yaml` | 记录错误信息 | 查询该契约时返回错误信息 |
+| **跨配置校验** | 模板字段是否在 schema 中有声明、路由中的供应商是否存在 | 校验失败仅记录错误到对应 entry，不阻塞启动 | 不影响运行时行为 |
 
 **注**：步骤 1 的全局性错误（如 `vendors/` 目录不存在）导致系统启动失败，其余步骤不影响系统启动。
 
@@ -1996,60 +1983,47 @@ Load(configDir)
   if vendors/ 目录和 events/ 目录均不存在或不可读:
     return error("配置目录结构无效")
 
-  // Step 2: 按 biz 加载路由规则，失败不阻塞
+  // Step 2~5: 四条加载支线独立并行，互不依赖
+  // （实际实现可顺序执行任意排列，也可用 goroutine 并发）
+  //
+  // ── 路由文件 ──
   for each {biz} in events/:
-    routeFile ← events/{biz}/route.yaml
-    if routeFile 解析失败:
-      log.Warn("加载路由文件失败",
-        "biz", biz,
-        "file", routeFile,
-        "error", err)
-      metrics.Inc("config.load.failure", "type", "route", "biz", biz)
-      continue             // 跳过该 biz，不影响其他 biz
-    提取路由规则，加入 runtimeConfig.routingRules
+    加载 route.yaml
+    - 成功 → 记录路由规则
+    - 失败 → 记录错误信息
 
-  // Step 3: 按 event 加载 Schema，失败不阻塞
+  // ── Schema 定义 ──
   for each {biz} in events/:
     for each {event}.yaml in events/{biz}/events/:
-      if 文件解析失败:
-        log.Warn("加载 Schema 文件失败",
-          "event_type", event,
-          "file", 文件路径,
-          "error", err)
-        metrics.Inc("config.load.failure", "type", "schema", "event", event)
-        continue             // 跳过该 schema，不影响其他 event
+      加载 Schema YAML
+      - 成功 → 记录 schema 配置
+      - 失败 → 记录错误信息
 
-  // Step 4: 按 vendor 加载供应商基础配置，失败跳过该 vendor
+  // ── 供应商配置 ──
   for each {vendor} in vendors/:
-    vendorFile ← vendors/{vendor}/vendor.yaml
-    if vendorFile 解析失败:
-      log.Error("加载供应商配置失败",
-        "vendor", vendor,
-        "file", vendorFile,
-        "error", err)
-      metrics.Inc("config.load.failure", "type", "vendor", "vendor", vendor)
-      continue             // 跳过该 vendor，不加载其 contracts
+    加载 vendor.yaml
+    - 成功 → 记录供应商配置
+    - 失败 → 记录错误信息
 
-  // Step 5: 按 contract 加载投递契约，失败跳过该 contract
+  // ── 投递契约 ──
   for each {vendor} in vendors/:
     for each {biz}/*.yaml in vendors/{vendor}/{biz}/:
-      if 文件解析失败:
-        log.Error("加载投递契约失败",
-          "vendor", vendor,
-          "event_type", event,
-          "file", 文件路径,
-          "error", err)
-        metrics.Inc("config.load.failure", "type", "contract", "vendor", vendor, "event", event)
-        continue             // 跳过该 contract
+      加载 contract YAML
+      - 成功 → 记录投递契约配置
+      - 失败 → 记录错误信息
+
+  // Step 6: 校验各配置间的引用一致性
+  // (不影响系统启动，失败不降级，仅记录错误到对应 entry)
+  // - template 字段是否在 schema 中有声明
+  // - 路由中的供应商是否存在
+  // 此步骤可独立于加载流程，后续也可通过管理接口手动触发
 
   记录加载结果概览日志：
     log.Info("配置加载完成",
       "routing_rules_count", count(routingRules),
       "vendor_count", count(vendorConfigs),
       "contract_count", count(deliveryContracts),
-      "schema_count", count(eventSchemas),
-      "degraded_biz", degradedBizList,
-      "degraded_vendors", degradedVendorList)
+      "schema_count", count(eventSchemas))
 
   return nil               // 即使部分失败，也不阻塞系统启动
 ```
@@ -2060,9 +2034,9 @@ Load(configDir)
 
 | 组件 | 正常状态 | 降级状态 |
 |------|---------|---------|
-| **Ingestion Service** | 校验 payload → 写入 DB → 发布触发消息 | Schema 不存在时返回 422 EVENT_NOT_FOUND；Schema 正常的事件不受影响 |
+| **Ingestion Service** | 校验 payload → 写入 DB → 发布触发消息 | Schema 加载失败时返回 422，error body 可区分"未配置"和"加载失败"；Schema 正常的事件不受影响 |
 | **Router** | 匹配路由规则 → 创建 delivery_task | 路由规则为空时，创建 0 个 task，notification 终态变为 FAILED |
-| **Worker** | 获取 VendorConfig + DeliverySpec → 构造请求 → 投递 | VendorConfig 不存在时 task 进 DEAD_LETTER；DeliverySpec 无 template 时 task 进 DEAD_LETTER |
+| **Worker** | 获取 VendorConfig + DeliverySpec → 构造请求 → 投递 | VendorConfig 加载失败时 task 进 DEAD_LETTER（可记录具体错误原因）；配送契约加载失败时 task 进 DEAD_LETTER |
 | **Mapping Engine** | 按 template 映射 payload | 无 template 时返回错误，由 Worker 处理为 DEAD_LETTER |
 
 #### 指标打点
