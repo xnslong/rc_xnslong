@@ -22,6 +22,21 @@ func (v *schemaValidator) validate(schemaDef []byte, payload map[string]any) []V
 	return validateNode(schema, payload, "payload")
 }
 
+// validateMap checks the payload against the given JSON Schema map.
+// Temp bridge: map -> JSON -> schemaNode.
+// IT2 adds proper parse-once cache that skips this round-trip.
+func (v *schemaValidator) validateMap(schemaMap map[string]any, payload map[string]any) []ValidationError {
+	schemaJSON, err := json.Marshal(schemaMap)
+	if err != nil {
+		return []ValidationError{{Field: "", Message: fmt.Sprintf("invalid schema definition: %v", err)}}
+	}
+	var schema schemaNode
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
+		return []ValidationError{{Field: "", Message: fmt.Sprintf("invalid schema definition: %v", err)}}
+	}
+	return validateNode(schema, payload, "payload")
+}
+
 // schemaNode represents a simplified JSON Schema node for MVP validation.
 type schemaNode struct {
 	Type       string                 `json:"type"`

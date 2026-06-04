@@ -139,9 +139,9 @@ func SetupSuiteWithConfig(configDir, projectRoot string, vendorIDs []string) (*S
 	// Create one MockVendor per vendor, using ports from config
 	s.MockVendors = make(map[string]*MockVendor)
 	for _, vendorID := range vendorIDs {
-		vendorCfg, ok := loader.GetVendorConfig(vendorID)
-		if !ok {
-			return nil, fmt.Errorf("vendor config not found: %s", vendorID)
+		vendorCfg, err := loader.GetVendorConfig(vendorID)
+		if err != nil {
+			return nil, fmt.Errorf("vendor config not found: %w", err)
 		}
 
 		u, err := url.Parse(vendorCfg.Request.URLTmpl)

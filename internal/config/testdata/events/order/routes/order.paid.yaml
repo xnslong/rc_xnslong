@@ -1,0 +1,4 @@
+event_type: "order.paid"
+routes:
+  - vendor_id: "crm_system"
+  - vendor_id: "ad_platform"

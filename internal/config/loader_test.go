@@ -19,7 +19,8 @@ func TestConfigLoader_GetRoutingRules(t *testing.T) {
 	err = loader.Load(context.Background())
 	require.NoError(t, err)
 
-	rules := loader.GetRoutingRules("order.paid")
+	rules, err := loader.GetRoutingRules("order.paid")
+	require.NoError(t, err)
 	require.Len(t, rules, 2, "order.paid should route to 2 vendors")
 
 	// Collect vendor IDs for easier assertion.
@@ -41,8 +42,8 @@ func TestConfigLoader_GetVendorConfig(t *testing.T) {
 	err = loader.Load(context.Background())
 	require.NoError(t, err)
 
-	vendor, ok := loader.GetVendorConfig("crm_system")
-	require.True(t, ok)
+	vendor, err := loader.GetVendorConfig("crm_system")
+	require.NoError(t, err)
 	require.NotNil(t, vendor)
 
 	assert.Equal(t, "crm_system", vendor.VendorID)
@@ -62,8 +63,8 @@ func TestConfigLoader_GetDeliverySpec(t *testing.T) {
 	err = loader.Load(context.Background())
 	require.NoError(t, err)
 
-	spec, ok := loader.GetDeliverySpec("crm_system", "order.paid")
-	require.True(t, ok)
+	spec, err := loader.GetDeliverySpec("crm_system", "order.paid")
+	require.NoError(t, err)
 	require.NotNil(t, spec)
 
 	// Method and URL come from vendor defaults.
@@ -88,8 +89,8 @@ func TestConfigLoader_GetDeliverySpec_NoContract(t *testing.T) {
 
 	// "user.registered" has a schema but no routing rule or delivery contract.
 	// It should still resolve to vendor defaults.
-	spec, ok := loader.GetDeliverySpec("ad_platform", "user.registered")
-	require.True(t, ok)
+	spec, err := loader.GetDeliverySpec("ad_platform", "user.registered")
+	require.NoError(t, err)
 	require.NotNil(t, spec)
 
 	assert.Equal(t, "POST", spec.Mapping.Request.Method)
@@ -107,11 +108,11 @@ func TestConfigLoader_GetEventSchema(t *testing.T) {
 	err = loader.Load(context.Background())
 	require.NoError(t, err)
 
-	schema, ok := loader.GetEventSchema("order.paid")
-	require.True(t, ok)
+	schema, err := loader.GetEventSchema("order.paid")
+	require.NoError(t, err)
 	require.NotNil(t, schema)
-	assert.Contains(t, string(schema), "order_id")
-	assert.Contains(t, string(schema), "amount")
+	assert.Contains(t, schema, "type")
+	assert.Contains(t, schema, "properties")
 }
 
 // TestConfigLoader_Load_Error verifies that Load returns an error when

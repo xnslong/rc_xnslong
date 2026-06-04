@@ -46,10 +46,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, notificationID string) error 
 	}
 
 	// 3. Match routing rules by event type
-	rules := d.cfg.GetRoutingRules(notif.EventType)
-
-	// 4. No matching rules — mark as FAILED
-	if len(rules) == 0 {
+	rules, err := d.cfg.GetRoutingRules(notif.EventType)
+	if err != nil || len(rules) == 0 {
 		log.Warn().Str("notification_id", notificationID).Str("event_type", notif.EventType).Msg("no routing rules matched, marking notification as FAILED")
 		if err := d.db.UpdateNotificationStatus(ctx, notificationID, "FAILED"); err != nil {
 			log.Error().Err(err).Str("notification_id", notificationID).Msg("failed to update notification status to FAILED")

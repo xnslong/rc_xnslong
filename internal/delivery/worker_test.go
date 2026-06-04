@@ -120,28 +120,28 @@ func (m *MockMQClient) PublishDelayed(ctx context.Context, vendorID, deliveryTas
 // MockConfigProvider implements port.ConfigProvider for testing.
 type MockConfigProvider struct{ mock.Mock }
 
-func (m *MockConfigProvider) GetVendorConfig(vendorID string) (*port.VendorConfig, bool) {
+func (m *MockConfigProvider) GetVendorConfig(vendorID string) (*port.VendorConfig, error) {
 	args := m.Called(vendorID)
 	cfg, _ := args.Get(0).(*port.VendorConfig)
-	return cfg, args.Bool(1)
+	return cfg, args.Error(1)
 }
 
-func (m *MockConfigProvider) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, bool) {
+func (m *MockConfigProvider) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, error) {
 	args := m.Called(vendorID, eventType)
 	spec, _ := args.Get(0).(*port.DeliverySpec)
-	return spec, args.Bool(1)
+	return spec, args.Error(1)
 }
 
-func (m *MockConfigProvider) GetRoutingRules(eventType string) []port.RoutingRule {
+func (m *MockConfigProvider) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
 	args := m.Called(eventType)
 	rules, _ := args.Get(0).([]port.RoutingRule)
-	return rules
+	return rules, args.Error(1)
 }
 
-func (m *MockConfigProvider) GetEventSchema(eventType string) ([]byte, bool) {
+func (m *MockConfigProvider) GetEventSchema(eventType string) (map[string]any, error) {
 	args := m.Called(eventType)
-	data, _ := args.Get(0).([]byte)
-	return data, args.Bool(1)
+	data, _ := args.Get(0).(map[string]any)
+	return data, args.Error(1)
 }
 
 // MockRequestBuilder implements delivery.RequestBuilder for testing.
@@ -247,8 +247,8 @@ func TestWorker_SuccessfulDelivery(t *testing.T) {
 	mockDB.On("GetNotificationPayload", mock.Anything, testNotifID).Return(testPayload, nil)
 
 	// Config
-	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, true)
-	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, true)
+	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, nil)
+	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, nil)
 
 	// Engine: build request succeeds
 	req, err := http.NewRequest("POST", "https://vendor.example.com/api/notify", nil)
@@ -309,8 +309,8 @@ func TestWorker_RetryableHTTPFailure(t *testing.T) {
 	mockDB.On("GetNotificationPayload", mock.Anything, testNotifID).Return(testPayload, nil)
 
 	// Config
-	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, true)
-	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, true)
+	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, nil)
+	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, nil)
 
 	// Engine: build request succeeds
 	req, err := http.NewRequest("POST", "https://vendor.example.com/api/notify", nil)
@@ -371,8 +371,8 @@ func TestWorker_RetryExhaustedToDeadLetter(t *testing.T) {
 	mockDB.On("GetDeliveryTask", mock.Anything, testTaskID).Return(task, nil)
 	mockDB.On("GetNotificationPayload", mock.Anything, testNotifID).Return(testPayload, nil)
 
-	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, true)
-	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, true)
+	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, nil)
+	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, nil)
 
 	req, err := http.NewRequest("POST", "https://vendor.example.com/api/notify", nil)
 	require.NoError(t, err)
@@ -431,8 +431,8 @@ func TestWorker_NetworkError(t *testing.T) {
 	mockDB.On("GetDeliveryTask", mock.Anything, testTaskID).Return(task, nil)
 	mockDB.On("GetNotificationPayload", mock.Anything, testNotifID).Return(testPayload, nil)
 
-	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, true)
-	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, true)
+	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, nil)
+	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, nil)
 
 	req, err := http.NewRequest("POST", "https://vendor.example.com/api/notify", nil)
 	require.NoError(t, err)
@@ -485,8 +485,8 @@ func TestWorker_DBUpdateFailure(t *testing.T) {
 	mockDB.On("GetDeliveryTask", mock.Anything, testTaskID).Return(task, nil)
 	mockDB.On("GetNotificationPayload", mock.Anything, testNotifID).Return(testPayload, nil)
 
-	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, true)
-	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, true)
+	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, nil)
+	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, nil)
 
 	req, err := http.NewRequest("POST", "https://vendor.example.com/api/notify", nil)
 	require.NoError(t, err)
@@ -544,8 +544,8 @@ func TestWorker_EngineBuildFailure(t *testing.T) {
 	mockDB.On("GetDeliveryTask", mock.Anything, testTaskID).Return(task, nil)
 	mockDB.On("GetNotificationPayload", mock.Anything, testNotifID).Return(testPayload, nil)
 
-	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, true)
-	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, true)
+	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, nil)
+	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, nil)
 
 	// Engine: build request fails
 	engineErr := errors.New("build request: unsupported body type")
@@ -600,8 +600,8 @@ func TestWorker_StopWaitsForInflight(t *testing.T) {
 	mockDB.On("GetDeliveryTask", mock.Anything, testTaskID).Return(task, nil)
 	mockDB.On("GetNotificationPayload", mock.Anything, testNotifID).Return(testPayload, nil)
 
-	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, true)
-	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, true)
+	mockConfig.On("GetVendorConfig", testVendorID).Return(testVendorCfg, nil)
+	mockConfig.On("GetDeliverySpec", testVendorID, testEventType).Return(testDeliverySpec, nil)
 
 	// Engine returns a request pointing to the slow test server
 	req, err := http.NewRequest("POST", server.URL+"/api/notify", nil)
