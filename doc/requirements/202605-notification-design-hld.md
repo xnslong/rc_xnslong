@@ -1045,14 +1045,14 @@ items:
       $source: "@{item}"
       $type: string
 
-# 输入：{ end_dates: ["2026-06-01", "2026-06-15"] }
-# 输出：{ closing_dates: [{ date: "2026-06-01T00:00:00Z" }, ...] }
+# 输入：{ timestamps: [1716518400, 1716604800] }
+# 输出：{ closing_dates: [{ date: "2024-05-24" }, { date: "2024-05-25" }] }
 closing_dates:
-  $source: "@{payload:end_dates}"
+  $source: "@{payload:timestamps}"
   $each:
     date:
       $source: "@{item}"
-      $format: "iso8601"
+      $format: "2006-01-02"
 ```
 
 `@{payload:*}` 在 `$each` 块内同样可用，指向原始通知数据。

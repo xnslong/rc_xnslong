@@ -15,17 +15,24 @@ import (
 )
 
 // resolveRefRe matches @{scope:path} references where scope is payload or item.
-var resolveRefRe = regexp.MustCompile(`@\{(payload|item):([^}]+)\}`)
+// The :path part is optional — @{item} (bare) references the current element
+// value itself (for primitive arrays), while @{item:field} references a field
+// on the current element object (for object arrays).
+var resolveRefRe = regexp.MustCompile(`@\{(payload|item)(?::([^}]+))?\}`)
 
 // resolveContext is the unified data context container for the mapping engine.
 // It provides namespace isolation between the original notification payload
 // and the current $each iteration item.
 //
-//	@{payload:field} resolves against ctx.payload (original notification data).
-//	@{item:field}    resolves against ctx.item (current $each element, nil outside $each).
+//	@{payload:field}  resolves against ctx.payload (original notification data).
+//	@{item:field}     resolves against ctx.item field (current $each element,
+//	                  for object arrays where element is a map).
+//	@{item}           resolves to ctx.item itself (for primitive arrays where
+//	                  element is a number, string, or bool).
 type resolveContext struct {
 	payload map[string]any
-	item    map[string]any // set during $each iteration, nil otherwise
+	item    any // current $each element; map[string]any for object arrays,
+	// int/string/bool etc. for primitive arrays; nil outside $each.
 }
 
 func (c resolveContext) lookup(scope string) map[string]any {
@@ -33,7 +40,10 @@ func (c resolveContext) lookup(scope string) map[string]any {
 	case "payload":
 		return c.payload
 	case "item":
-		return c.item
+		if m, ok := c.item.(map[string]any); ok {
+			return m
+		}
+		return nil
 	default:
 		return nil
 	}
@@ -238,13 +248,14 @@ func (e *Engine) resolveEachDirective(v map[string]any, ctx resolveContext) (any
 
 	result := make([]any, 0, len(srcArray))
 	for _, elem := range srcArray {
-		elemMap, ok := elem.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("$each array element must be a map, got %T", elem)
+		// Support both object arrays (map[string]any) and primitive arrays
+		// (string, int, float64, bool, nil).
+		var itemCtx resolveContext
+		if elemMap, ok := elem.(map[string]any); ok {
+			itemCtx = resolveContext{payload: ctx.payload, item: elemMap}
+		} else {
+			itemCtx = resolveContext{payload: ctx.payload, item: elem}
 		}
-
-		// Extend context: keep original payload, add current item
-		itemCtx := resolveContext{payload: ctx.payload, item: elemMap}
 		mapped, err := e.resolveNode(eachTemplate, itemCtx)
 		if err != nil {
 			return nil, fmt.Errorf("$each mapping failed: %w", err)
@@ -260,6 +271,9 @@ func (e *Engine) resolveEachDirective(v map[string]any, ctx resolveContext) (any
 //
 // Behavior depends on the expression form:
 //   - No @{} references: returns expr as-is (static string)
+//   - Pure "@{scope}" (bare scope, no :path): returns the scope's value directly.
+//     "@{item}" returns the current $each element value itself (supports
+//     primitive values).
 //   - Pure "@{scope:path}" (single reference, no prefix/suffix): returns the
 //     original typed value from ctx (preserves int/bool/nil types).
 //   - Mixed content (prefix/suffix/multiple @{}): concatenates everything as string.
@@ -278,6 +292,9 @@ func (e *Engine) resolveField(expr string, ctx resolveContext) (any, error) {
 		matches := resolveRefRe.FindStringSubmatch(expr)
 		scope := matches[1]
 		path := matches[2]
+		if path == "" {
+			return e.getScopeValue(scope, ctx), nil
+		}
 		val := getNestedField(ctx.lookup(scope), path)
 		return val, nil
 	}
@@ -287,9 +304,26 @@ func (e *Engine) resolveField(expr string, ctx resolveContext) (any, error) {
 		matches := resolveRefRe.FindStringSubmatch(match)
 		scope := matches[1]
 		path := matches[2]
+		if path == "" {
+			return tostring(e.getScopeValue(scope, ctx))
+		}
 		return tostring(getNestedField(ctx.lookup(scope), path))
 	})
 	return result, nil
+}
+
+// getScopeValue returns the raw value for a bare @{scope} reference.
+// For "item" returns ctx.item directly (supports primitive values).
+// For "payload" returns ctx.payload as-is.
+func (e *Engine) getScopeValue(scope string, ctx resolveContext) any {
+	switch scope {
+	case "payload":
+		return ctx.payload
+	case "item":
+		return ctx.item
+	default:
+		return nil
+	}
 }
 
 // getNestedField traverses a map by dot-separated path and returns the value.

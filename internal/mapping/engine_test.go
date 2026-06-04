@@ -177,7 +177,37 @@ func TestEngine_ResolveFieldTypePreservation(t *testing.T) {
 func TestEngine_ItemFieldRef(t *testing.T) {
 	e := &Engine{}
 
-	t.Run("@{} resolves from item scope", func(t *testing.T) {
+	t.Run("5.1.7 @{item} bare reference returns primitive item value", func(t *testing.T) {
+		ctx := resolveContext{
+			payload: map[string]any{},
+			item:    42,
+		}
+		got, err := e.resolveField("@{item}", ctx)
+		require.NoError(t, err)
+		assert.Equal(t, 42, got)
+	})
+
+	t.Run("@{item} bare reference returns string item value", func(t *testing.T) {
+		ctx := resolveContext{
+			payload: map[string]any{},
+			item:    "hello",
+		}
+		got, err := e.resolveField("@{item}", ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "hello", got)
+	})
+
+	t.Run("@{item} in mixed template with prefix", func(t *testing.T) {
+		ctx := resolveContext{
+			payload: map[string]any{},
+			item:    42,
+		}
+		got, err := e.resolveField("score-@{item}", ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "score-42", got)
+	})
+
+	t.Run("@{} resolves from item scope as map", func(t *testing.T) {
 		ctx := resolveContext{
 			payload: map[string]any{"global_key": "global_val"},
 			item:    map[string]any{"id": "p1", "qty": 3},
@@ -452,6 +482,10 @@ func TestFormatValue(t *testing.T) {
 // @test-case TC3.7-each_payload_ref
 // @test-case TC3.7-each_empty_array
 // @test-case TC3.7-each_not_array
+// @test-case TC3.7-each_primitive
+// @test-case TC3.7-each_primitive_with_type
+// @test-case TC3.7-each_primitive_with_format
+// @test-case TC3.7-each_primitive_empty
 func TestEngine_EachDirective(t *testing.T) {
 	e := &Engine{}
 
@@ -661,6 +695,100 @@ func TestEngine_EachDirective(t *testing.T) {
 		}
 		_, err := e.resolveSourceDirective(directive, ctx)
 		require.Error(t, err)
+	})
+
+	// Primitive array tests: @{item} bare reference
+	t.Run("TC3.7-each_primitive: primitive array with @{item}", func(t *testing.T) {
+		ctx := resolveContext{
+			payload: map[string]any{
+				"produce_list": []any{1, 2, 3},
+			},
+		}
+		directive := map[string]any{
+			"$source": "@{payload:produce_list}",
+			"$each": map[string]any{
+				"product": "@{item}",
+			},
+		}
+		got, err := e.resolveSourceDirective(directive, ctx)
+		require.NoError(t, err)
+
+		expected := []any{
+			map[string]any{"product": 1},
+			map[string]any{"product": 2},
+			map[string]any{"product": 3},
+		}
+		assert.Equal(t, expected, got)
+	})
+
+	t.Run("TC3.7-each_primitive_with_type: primitive array with $type", func(t *testing.T) {
+		ctx := resolveContext{
+			payload: map[string]any{
+				"produce_list": []any{1, 2, 3},
+			},
+		}
+		directive := map[string]any{
+			"$source": "@{payload:produce_list}",
+			"$each": map[string]any{
+				"product": map[string]any{
+					"$source": "@{item}",
+					"$type":   "string",
+				},
+			},
+		}
+		got, err := e.resolveSourceDirective(directive, ctx)
+		require.NoError(t, err)
+
+		expected := []any{
+			map[string]any{"product": "1"},
+			map[string]any{"product": "2"},
+			map[string]any{"product": "3"},
+		}
+		assert.Equal(t, expected, got)
+	})
+
+	t.Run("TC3.7-each_primitive_with_format: primitive array with $format (unix timestamp)", func(t *testing.T) {
+		ctx := resolveContext{
+			payload: map[string]any{
+				"timestamps": []any{1716518400, 1716604800},
+			},
+		}
+		directive := map[string]any{
+			"$source": "@{payload:timestamps}",
+			"$each": map[string]any{
+				"date": map[string]any{
+					"$source": "@{item}",
+					"$format": "2006-01-02",
+				},
+			},
+		}
+		got, err := e.resolveSourceDirective(directive, ctx)
+		require.NoError(t, err)
+
+		expected := []any{
+			map[string]any{"date": "2024-05-24"},
+			map[string]any{"date": "2024-05-25"},
+		}
+		assert.Equal(t, expected, got)
+	})
+
+	t.Run("TC3.7-each_primitive_empty: empty primitive array", func(t *testing.T) {
+		ctx := resolveContext{
+			payload: map[string]any{
+				"produce_list": []any{},
+			},
+		}
+		directive := map[string]any{
+			"$source": "@{payload:produce_list}",
+			"$each": map[string]any{
+				"product": "@{item}",
+			},
+		}
+		got, err := e.resolveSourceDirective(directive, ctx)
+		require.NoError(t, err)
+
+		expected := []any{}
+		assert.Equal(t, expected, got)
 	})
 }
 

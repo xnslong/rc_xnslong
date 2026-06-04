@@ -198,7 +198,7 @@ TC1.2-test1                ❌ 坏：无意义
 | TC3.7-each_not_array | payload: `{products: "not_an_array"}`<br>模板: `$source: "@{payload:products}"`<br>`$each: {product_id: "@{item:id}"}` | 映射失败，通知最终 FAILED | ✅ a837d89 (2026-06-03) |
 | TC3.7-each_primitive | payload: `{produce_list: [1, 2, 3]}`<br>模板: `$source: "@{payload:produce_list}"`<br>`$each: {product: "@{item}"}` | vendor body: `[{product: 1}, {product: 2}, {product: 3}]` | 🔲 |
 | TC3.7-each_primitive_with_type | payload: `{produce_list: [1, 2, 3]}`<br>模板: `$source: "@{payload:produce_list}"`<br>`$each: {product: {$source: "@{item}", $type: "string"}}` | vendor body: `[{product: "1"}, {product: "2"}, {product: "3"}]` | 🔲 |
-| TC3.7-each_primitive_with_format | payload: `{end_dates: ["2026-06-01", "2026-06-15"]}`<br>模板: `$source: "@{payload:end_dates}"`<br>`$each: {date: {$source: "@{item}", $format: "2006-01-02T15:04:05Z"}}` | vendor body: `[{date: "2026-06-01T00:00:00Z"}, {date: "2026-06-15T00:00:00Z"}]` | 🔲 |
+| TC3.7-each_primitive_with_format | payload: `{timestamps: [1716518400, 1716604800]}`<br>模板: `$source: "@{payload:timestamps}"`<br>`$each: {date: {$source: "@{item}", $format: "2006-01-02"}}` | vendor body: `[{date: "2024-05-24"}, {date: "2024-05-25"}]` | 🔲 |
 | TC3.7-each_primitive_empty | payload: `{produce_list: []}`<br>模板: `$source: "@{payload:produce_list}"`<br>`$each: {product: "@{item}"}` | vendor body: `[]`（空数组） | 🔲 |
 
 ---
