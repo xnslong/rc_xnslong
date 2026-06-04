@@ -551,6 +551,45 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// extractPayloadRefs extracts all @{payload:...} field references from a template value.
+// It recursively walks maps and arrays to find all string values containing payload references.
+func extractPayloadRefs(val any) []string {
+	var refs []string
+	extractPayloadRefsRecursive(val, &refs)
+	return refs
+}
+
+func extractPayloadRefsRecursive(val any, refs *[]string) {
+	switch v := val.(type) {
+	case string:
+		// Find all @{payload:...} occurrences in the string
+		for i := 0; i < len(v); i++ {
+			if v[i] == '@' && i+9 < len(v) && v[i:i+9] == "@{payload:" {
+				end := strings.Index(v[i:], "}")
+				if end > 0 {
+					ref := v[i+9 : i+end]
+					// Only take the first segment for nested paths (e.g. "a.b.c" -> "a")
+					if dot := strings.IndexByte(ref, '.'); dot > 0 {
+						ref = ref[:dot]
+					}
+					if ref != "" {
+						*refs = append(*refs, ref)
+					}
+					i += end
+				}
+			}
+		}
+	case map[string]any:
+		for _, child := range v {
+			extractPayloadRefsRecursive(child, refs)
+		}
+	case []any:
+		for _, child := range v {
+			extractPayloadRefsRecursive(child, refs)
+		}
+	}
+}
+
 // validateCrossConfig checks for consistency between independently-loaded
 // config items. Failures are logged but do not affect startup.
 func (l *Loader) validateCrossConfig() {
@@ -575,8 +614,45 @@ func (l *Loader) validateCrossConfig() {
 		}
 	}
 
-	// 2. Template fields reference existence in schema
-	// (future enhancement)
+	// 2. Delivery contract template fields exist in event schema
+	for key, lv := range l.deliveryContracts {
+		if lv.Error != nil || lv.Value == nil {
+			continue
+		}
+		contract := lv.Value
+		eventType := contract.EventType
+		if eventType == "" {
+			continue
+		}
+
+		schemaLV, hasSchema := l.eventSchemas[eventType]
+		if !hasSchema || schemaLV.Error != nil || schemaLV.Value == nil {
+			continue
+		}
+
+		// Get schema properties as a set of field names
+		schemaMap := schemaLV.Value
+		propsRaw, _ := schemaMap["properties"]
+		props, ok := propsRaw.(map[string]any)
+		if !ok || props == nil {
+			continue
+		}
+
+		// Extract template field references
+		refs := extractPayloadRefs(contract.Request.Body.Template)
+		for _, ref := range refs {
+			if _, exists := props[ref]; !exists {
+				log.Warn().
+					Str("module", "config.loader").
+					Str("event", "validation_error").
+					Str("type", "template_field_not_in_schema").
+					Str("field", ref).
+					Str("event_type", eventType).
+					Str("contract", key).
+					Msg("delivery contract references field not declared in event schema")
+			}
+		}
+	}
 }
 
 // ---- ConfigProvider implementation ----

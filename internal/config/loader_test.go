@@ -306,6 +306,73 @@ func TestConfigLoader_Load_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestConfigLoader_TemplateFieldValidation verifies that the cross-config validation
+// logs warnings when delivery contract templates reference fields not in the event schema.
+func TestConfigLoader_TemplateFieldValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Event schema declaring fields: user_id, amount
+	mustWriteFile(t, tmpDir+"/events/order/events/order.paid.yaml", `
+event_type: "order.paid"
+schema:
+  type: object
+  properties:
+    user_id:
+      type: string
+    amount:
+      type: integer
+`)
+
+	// Route for order.paid
+	mustWriteFile(t, tmpDir+"/events/order/routes/order.paid.yaml", `
+event_type: "order.paid"
+routes:
+  - vendor_id: "test_vendor"
+`)
+
+	// Vendor config
+	mustWriteFile(t, tmpDir+"/vendors/test_vendor/vendor.yaml", `
+vendor_id: "test_vendor"
+request:
+  method: POST
+  url: "http://example.com/api"
+  body:
+    type: mapping
+retry_policy:
+  max_attempts: 3
+  base_delay: 1s
+  max_delay: 10s
+  multiplier: 2.0
+  jitter: 0.2
+`)
+
+	// Delivery contract: references user_id (valid) and undefined_field (invalid)
+	mustWriteFile(t, tmpDir+"/vendors/test_vendor/order/order.paid.yaml", `
+event_type: "order.paid"
+request:
+  body:
+    type: mapping
+    template:
+      user_id: "@{payload:user_id}"
+      bad_field: "@{payload:undefined_field}"
+`)
+
+	loader, err := config.NewLoader(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, loader)
+
+	// Load should NOT fail — validation is best-effort
+	err = loader.Load(context.Background())
+	require.NoError(t, err, "Load should not fail on template field validation warnings")
+
+	// Delivery spec should be available (validation doesn't affect runtime)
+	spec, err := loader.GetDeliverySpec("test_vendor", "order.paid")
+	require.NoError(t, err)
+	require.NotNil(t, spec)
+	assert.Contains(t, spec.Mapping.Body.Template, "user_id")
+	assert.Contains(t, spec.Mapping.Body.Template, "bad_field")
+}
+
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	err := os.MkdirAll(filepath.Dir(path), 0755)
