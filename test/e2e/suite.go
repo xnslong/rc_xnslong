@@ -90,13 +90,10 @@ func SetupSuiteWithConfig(configDir, projectRoot string, vendorIDs []string) (*S
 	}
 
 	// Clean DB state from previous test runs
-	if _, err := pool.Exec(ctx, "TRUNCATE TABLE delivery_tasks, notifications, event_schemas CASCADE"); err != nil {
+	// Note: event_schemas table is no longer used by the server — schemas
+	// are loaded from local config files via ConfigLoader.
+	if _, err := pool.Exec(ctx, "TRUNCATE TABLE delivery_tasks, notifications CASCADE"); err != nil {
 		return nil, fmt.Errorf("clean db: %w", err)
-	}
-
-	// Seed event schemas from files
-	if err := seedEventSchemas(ctx, pool, configDir); err != nil {
-		return nil, fmt.Errorf("seed event schemas: %w", err)
 	}
 
 	// Connect to RabbitMQ

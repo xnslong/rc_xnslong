@@ -1,10 +1,10 @@
 # API 通知系统 — 详细设计 (Detailed Design)
 
-> 版本: v0.1  
-> 日期: 2026-05-24  
+> 版本: v0.2  
+> 日期: 2026-06-01  
 > 状态: 草案  
 > 基于 HLD: v0.2  
-> 前置阅读: [需求文档 v0.2](202605-notification.md)、[HLD v0.2](202605-notification-design-hld.md)
+> 前置阅读: [需求文档 v0.3](202605-notification.md)、[HLD v0.2](202605-notification-design-hld.md)
 
 ---
 
@@ -33,6 +33,7 @@
   - [4.5 路由规则格式](#45-路由规则格式)
   - [4.6 机密引用语法](#46-机密引用语法)
 - [5. 组件内部设计](#5-组件内部设计)
+  - [5.0 整体架构与组件图](#50-整体架构与组件图)
   - [5.1 接收网关](#51-接收网关)
   - [5.2 路由分发器](#52-路由分发器)
   - [5.3 请求拼装引擎](#53-请求拼装引擎)
@@ -99,7 +100,7 @@
 
 | 文档 | 版本 | 说明 |
 |------|------|------|
-| [需求分析](202605-notification.md) | v0.2 | 用例定义、变化点分析、非功能性需求 |
+| [需求分析](202605-notification.md) | v0.3 | 用例定义、变化点分析、非功能性需求 |
 | [概要设计](202605-notification-design-hld.md) | v0.2 | 架构决策、方案组合、核心组件定义 |
 
 <a id="14-mvp-范围界定"></a>
@@ -150,13 +151,13 @@ stateDiagram-v2
 
 状态迁移条件：
 
-| 当前状态 | 目标状态 | 触发条件 |
+| 前提条件 | 目标状态 | 更新方式 |
 |----------|---------|----------|
-| PENDING | DELIVERING | 路由分发器完成匹配并创建了至少 1 个 DeliveryTask |
-| PENDING | FAILED | 路由分发器匹配结果为 0 个供应商 |
-| DELIVERING | SUCCEEDED | 所有关联 DeliveryTask 状态为 SUCCEEDED |
-| DELIVERING | PARTIALLY_FAILED | 部分 DeliveryTask SUCCEEDED，剩余全部 DEAD_LETTER |
-| DELIVERING | FAILED | 所有 DeliveryTask 均为 DEAD_LETTER |
+| 所有 DeliveryTask SUCCEEDED | SUCCEEDED | 最后一个成功的 Task Worker 在投递成功后更新 |
+| 部分 Task DEAD_LETTER，部分 SUCCEEDED | PARTIALLY_FAILED | 同上（最后一个终态 Task 触发） |
+| 所有 Task DEAD_LETTER | FAILED | 同上 |
+
+> `PENDING → DELIVERING` 由路由分发器推动；各 DeliveryTask 终态到达后在 Worker 内触发 `notifications` 状态更新。若 DB 更新失败，Worker 的消息经 MQ 重新入队后重试——此时 `delivery_task` 已标记成功，重试不会重复发请求，仅重试 DB 状态更新。**无需额外的后台补偿扫描**。
 
 > Notification 的 FAILED 和 PARTIALLY_FAILED 是终端状态，不自动恢复。人工排查问题后可通过重试或重新提交通知来恢复。
 
@@ -168,11 +169,13 @@ DeliveryTask 代表面向单个供应商的一次完整投递生命周期：
 stateDiagram-v2
     [*] --> PENDING: 路由完成创建
     PENDING --> DELIVERING: Worker 消费
+    PENDING --> IGNORED: 路由分发判定无需投递
     DELIVERING --> SUCCEEDED: 投递成功
     DELIVERING --> FAILED: 投递失败(可重试)
     FAILED --> DELIVERING: 重试消费
     FAILED --> DEAD_LETTER: 超过max_attempts
     SUCCEEDED --> [*]
+    IGNORED --> [*]
     DEAD_LETTER --> [*]
 ```
 
@@ -181,230 +184,82 @@ stateDiagram-v2
 | 当前状态 | 目标状态 | 触发条件 |
 |----------|---------|----------|
 | PENDING | DELIVERING | Worker 从 MQ 消费到该 task 的消息，开始处理 |
+| PENDING | IGNORED | 路由分发器判定：供应商已停用或无需投递（如重试窗口已过期） |
 | DELIVERING | SUCCEEDED | 响应判定为成功 |
 | DELIVERING | FAILED | 响应判定为失败，且 retry_count < max_attempts - 1 |
 | FAILED | DELIVERING | 重试消息到达，Worker 再次消费 |
 | FAILED | DEAD_LETTER | 响应判定为失败，且 retry_count >= max_attempts - 1 |
 
 <a id="22-表结构-ddl"></a>
-### 2.2 表结构 DDL
+### 2.2 表结构
 
-#### 2.2.1 callers — 调用方表（未来扩展）
+#### 2.2.1 MVP 实体关系图
 
-> MVP 阶段不启用调用方鉴权。此表在第二阶段引入调用方鉴权时启用。
+```mermaid
+erDiagram
+    notifications {
+        uuid        id              PK
+        int         shard_id        "预分片键：id_mod_1024，初始全为0"
+        string      caller_id       "调用方标识（MVP 自由文本，未来指向 callers）"
+        string      idempotent_key  "幂等键，与 caller_id 唯一约束"
+        string      event_type
+        jsonb       payload
+        string      status          "PENDING / DELIVERING / SUCCEEDED / PARTIALLY_FAILED / FAILED"
+        timestamp   created_at
+        timestamp   updated_at
+    }
 
-```sql
-CREATE TABLE callers (
-    id              BIGSERIAL       PRIMARY KEY,
-    caller_id       VARCHAR(64)     NOT NULL,
-    name            VARCHAR(128)    NOT NULL DEFAULT '',
-    api_key_hash    VARCHAR(64)     NOT NULL,           -- SHA-256(api_key)，用于快速认证
-    api_secret_hash VARCHAR(128)    NOT NULL,           -- bcrypt(api_secret)
-    allowed_events  JSONB           NOT NULL DEFAULT '[]',  -- 允许的事件类型列表，[]表示全部
-    rate_limit      JSONB,                              -- 调用方级限流配置，NULL表示不限
-    status          VARCHAR(16)     NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE / DISABLED
-    contact         VARCHAR(256)    NOT NULL DEFAULT '',
-    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    delivery_tasks {
+        uuid        id               PK
+        int         shard_id         "预分片键"
+        uuid        notification_id  "FK，UK: (notification_id, vendor_id)"
+        string      vendor_id        "对应配置 vendors/ 目录"
+        string      status           "PENDING / DELIVERING / SUCCEEDED / FAILED / IGNORED / DEAD_LETTER"
+        int         retry_count      "已重试次数（不含首次）"
+        int         max_retries      "从供应商配置继承，含首次"
+        text        last_error       "摘要级错误信息"
+        timestamp   created_at
+        timestamp   updated_at
+    }
 
-    CONSTRAINT uq_callers_caller_id UNIQUE (caller_id),
-    CONSTRAINT uq_callers_api_key_hash UNIQUE (api_key_hash),
-    CONSTRAINT chk_callers_status CHECK (status IN ('ACTIVE', 'DISABLED'))
-);
-
-COMMENT ON TABLE callers IS '调用方(业务系统)注册表';
-COMMENT ON COLUMN callers.api_key_hash IS 'API Key 的 SHA-256 哈希，用于认证时快速查找';
-COMMENT ON COLUMN callers.api_secret_hash IS 'API Secret 的 bcrypt 哈希';
-COMMENT ON COLUMN callers.allowed_events IS '允许提交的事件类型列表，["*"]表示全部';
-COMMENT ON COLUMN callers.rate_limit IS '调用方级限流配置: {"tokens_per_second": 100, "burst": 200}';
+    notifications ||--o{ delivery_tasks : "投递"
 ```
 
-#### 2.2.2 notifications — 通知表（MVP）
+> **Schema 管理说明**：事件类型 Schema（JSON Schema Draft-07）通过 Git 管理，存放在 `config/events/` 目录下，不在 DB 中存储。接收网关在收到提交通知时，从本地配置文件加载对应 Schema 校验 payload。详见 §4.2。
 
-```sql
-CREATE TABLE notifications (
-    id              UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
-    shard_id        INT             NOT NULL DEFAULT 0,
-    caller_id       VARCHAR(64)     NOT NULL,
-    idempotent_key  VARCHAR(128)    NOT NULL,
-    event_type      VARCHAR(128)    NOT NULL,
-    payload         JSONB           NOT NULL,
-    status          VARCHAR(20)     NOT NULL DEFAULT 'PENDING',
-    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT uq_notifications_caller_idempotent UNIQUE (caller_id, idempotent_key),
-    CONSTRAINT chk_notifications_status CHECK (status IN (
-        'PENDING', 'DELIVERING', 'SUCCEEDED', 'PARTIALLY_FAILED', 'FAILED'
-    ))
-    -- MVP 阶段无 callers 表，caller_id 作为自由文本字段
-    -- 第二阶段引入调用方管理后添加 FK: REFERENCES callers (caller_id)
-);
-
-COMMENT ON TABLE notifications IS '业务系统提交的原始通知';
-COMMENT ON COLUMN notifications.shard_id IS '预分片键: id % 1024，初始阶段全为0';
-COMMENT ON COLUMN notifications.idempotent_key IS '幂等键，与(caller_id)组成唯一约束';
-COMMENT ON COLUMN notifications.payload IS '事件载荷，JSONB 格式';
-```
-
-#### 2.2.3 delivery_tasks — 投递任务表
-
-```sql
-CREATE TABLE delivery_tasks (
-    id                UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
-    shard_id          INT             NOT NULL DEFAULT 0,
-    notification_id   UUID            NOT NULL,
-    vendor_id         VARCHAR(64)     NOT NULL,
-    status            VARCHAR(20)     NOT NULL DEFAULT 'PENDING',
-    retry_count       INT             NOT NULL DEFAULT 0,
-    max_retries       INT             NOT NULL DEFAULT 5,
-    next_retry_at     TIMESTAMPTZ,
-    last_error        TEXT,
-    created_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT chk_delivery_tasks_status CHECK (status IN (
-        'PENDING', 'DELIVERING', 'SUCCEEDED', 'FAILED', 'DEAD_LETTER'
-    )),
-    CONSTRAINT fk_delivery_tasks_notification FOREIGN KEY (notification_id)
-        REFERENCES notifications (id)
-);
-
-COMMENT ON TABLE delivery_tasks IS '面向单个供应商的投递任务';
-COMMENT ON COLUMN delivery_tasks.vendor_id IS '供应商标识，与本地配置 vendors/ 目录中的 vendor_id 对应';
-COMMENT ON COLUMN delivery_tasks.retry_count IS '已重试次数(不含首次)';
-COMMENT ON COLUMN delivery_tasks.max_retries IS '最大尝试次数(含首次)，从供应商配置继承';
-COMMENT ON COLUMN delivery_tasks.next_retry_at IS '下次重试时间，Worker 消费时按此字段过滤';
-COMMENT ON COLUMN delivery_tasks.last_error IS '最后一次失败的错误信息(摘要级，完整 attempt 日志走 stdout)';
-```
-
-#### 2.2.4 dead_letter_records — 死信记录表
-
-```sql
-CREATE TABLE dead_letter_records (
-    id                UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
-    delivery_task_id  UUID            NOT NULL,
-    notification_id   UUID            NOT NULL,
-    vendor_id         VARCHAR(64)     NOT NULL,
-    retry_count       INT             NOT NULL,
-    last_error        TEXT            NOT NULL DEFAULT '',
-    last_response     JSONB,                              -- 最后一次响应的关键信息
-    last_attempt_at   TIMESTAMPTZ     NOT NULL,
-    status            VARCHAR(20)     NOT NULL DEFAULT 'PENDING',  -- PENDING / RETRYING / ARCHIVED
-    created_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at        TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT uq_dead_letter_records_delivery_task UNIQUE (delivery_task_id),
-    CONSTRAINT fk_dead_letter_records_delivery_task FOREIGN KEY (delivery_task_id)
-        REFERENCES delivery_tasks (id),
-    CONSTRAINT fk_dead_letter_records_notification FOREIGN KEY (notification_id)
-        REFERENCES notifications (id)
-);
-
-COMMENT ON TABLE dead_letter_records IS '死信记录，保留完整的投递历史和关键响应信息';
-COMMENT ON COLUMN dead_letter_records.last_response IS '最后一次响应的状态码和 body(截断)，用于快速排查';
-```
-
-#### 2.2.5 event_schemas — 事件类型 Schema 注册表
-
-```sql
-CREATE TABLE event_schemas (
-    id              SERIAL          PRIMARY KEY,
-    event_type      VARCHAR(128)    NOT NULL,
-    version         INT             NOT NULL DEFAULT 1,
-    schema_def      JSONB           NOT NULL,               -- JSON Schema 定义
-    description     TEXT            NOT NULL DEFAULT '',
-    status          VARCHAR(16)     NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE / DEPRECATED
-    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-
-    CONSTRAINT uq_event_schemas_type_version UNIQUE (event_type, version)
-);
-
-COMMENT ON TABLE event_schemas IS '事件类型及其 JSON Schema 定义';
-COMMENT ON COLUMN event_schemas.schema_def IS 'JSON Schema (Draft-07) 定义，含 x-format 扩展';
-```
-
-> **说明**：`event_schemas` 表在 MVP 中即启用。接收网关在收到提交通知时，根据 `event_type` 加载对应 Schema 校验 payload。
+#### 2.2.2 未来扩展：callers 表
 
 <a id="23-索引策略"></a>
 ### 2.3 索引策略
 
 #### 2.3.1 notifications 索引
 
-```sql
--- 幂等校验查询：按 (caller_id, idempotent_key) 唯一约束已有索引，无需额外创建
-
--- 按调用方查询通知列表（支持分页）
-CREATE INDEX idx_notifications_caller_id_created
-    ON notifications (caller_id, created_at DESC);
-
--- 按事件类型查询（运营分析）
-CREATE INDEX idx_notifications_event_type_created
-    ON notifications (event_type, created_at DESC);
-
--- 按状态查询（后台扫描/数据修复）
-CREATE INDEX idx_notifications_status_created
-    ON notifications (status, created_at)
-    WHERE status IN ('PENDING', 'DELIVERING');
-```
+| 用途 | 索引字段 | 为什么 |
+|------|---------|--------|
+| 幂等校验 | `(caller_id, idempotent_key)` 唯一约束 | 每次提交通知都需检查是否重复，这是最高频的查询路径。唯一约束自带索引，无需额外创建 |
+| 调用方列表查询 | `(caller_id, created_at DESC)` | 调用方查自己的通知列表，按时间倒序分页。复合索引让一次索引扫描即可完成排序+过滤，避免文件排序 |
+| 运营分析 | `(event_type, created_at DESC)` | 按事件类型统计/排查问题时走此索引。非高频路径，但数据量增长后全表扫描代价高，建索引成本可控 |
 
 #### 2.3.2 delivery_tasks 索引
 
-```sql
--- 按 notification_id 查询投递任务列表
-CREATE INDEX idx_delivery_tasks_notification_id
-    ON delivery_tasks (notification_id);
-
--- 按供应商与状态查询待重试任务
-CREATE INDEX idx_delivery_tasks_vendor_status_retry
-    ON delivery_tasks (vendor_id, status, next_retry_at)
-    WHERE status IN ('FAILED', 'DEAD_LETTER');
-
--- 按状态查询（后台重试扫描）
-CREATE INDEX idx_delivery_tasks_status
-    ON delivery_tasks (status, created_at)
-    WHERE status = 'PENDING';
-
--- 死信列表查询
-CREATE INDEX idx_delivery_tasks_dead_letter_vendor
-    ON delivery_tasks (vendor_id, created_at DESC)
-    WHERE status = 'DEAD_LETTER';
-```
+| 用途 | 索引字段 | 为什么 |
+|------|---------|--------|
+| 通知详情展示 | `(notification_id, vendor_id)` 唯一约束 | 既满足"查一个通知的全部投递任务"，也支持"查某个通知下特定供应商的任务"。且同一通知对同一供应商不会重复投递，这本身就是业务上的唯一约束 |
+| 死信运营查询 | `(vendor_id, created_at DESC)` 条件索引，仅 `DEAD_LETTER` | 运维查某个供应商的死信情况时使用。`DEAD_LETTER` 是低频状态行，条件索引极度精简 |
 
 <a id="24-分区与分片策略"></a>
 ### 2.4 分区与分片策略
 
-#### 2.4.1 时间分区
+#### 2.4.1 时间分区（未来扩展）
 
-`delivery_tasks` 和 `dead_letter_records` 按时间分区策略：
+MVP 阶段数据量较小，不启用表分区。当 `delivery_tasks` 数据量达到千万级后，预计按 `created_at` 按月范围分区。届时根据实际查询模式决定分区粒度（月 / 季 / 年）。
 
-```sql
--- delivery_tasks 月度分区（创建时即确定所属分区）
-CREATE TABLE delivery_tasks (
-    -- ...列定义如上...
-) PARTITION BY RANGE (created_at);
-
-CREATE TABLE delivery_tasks_2026_05 PARTITION OF delivery_tasks
-    FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
-CREATE TABLE delivery_tasks_2026_06 PARTITION OF delivery_tasks
-    FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
--- ...每月预创建下月分区...
-
--- dead_letter_records 同理
-CREATE TABLE dead_letter_records (
-    -- ...列定义如上...
-) PARTITION BY RANGE (created_at);
-```
-
-**分区维护规则**：
+**分区维护策略（预定，待定稿）**：
 
 | 操作 | 周期 | 说明 |
 |------|------|------|
-| 预创建分区 | 每月 25 日 | 提前创建下月分区 |
-| 清理历史分区 | 每季度 | 删除超过保留周期（默认 90 天）的分区 |
-
-> **未来扩展**：`notifications` 表保留周期更长（默认 180 天），TBD 根据实际数据量决定是否分区。
+| 预创建分区 | 每月（或每季度） | 提前创建下期分区，避免写入抖动 |
+| 清理历史分区 | 每季度 | 直接 DROP PARTITION 而非 DELETE，秒级完成。保留周期默认 90 天 |
 
 #### 2.4.2 预分片设计
 
@@ -481,7 +336,7 @@ Content-Type: application/json
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `event` | string | 是 | 事件类型，如 `order.paid`，必须在 `event_schemas` 中注册 |
+| `event` | string | 是 | 事件类型，如 `order.paid`，必须已在 `config/events/` 中定义 Schema |
 | `idempotent_key` | string | 否 | 调用方幂等键，建议使用业务唯一标识。不传时系统自动生成 UUID |
 | `payload` | object | 是 | 事件载荷，需符合该 event_type 的 JSON Schema |
 
@@ -550,7 +405,6 @@ GET /api/v1/notifications/:notification_id
         "status": "FAILED",
         "retry_count": 2,
         "last_error": "HTTP 503",
-        "next_retry_at": "2026-05-24T10:31:00Z",
         "created_at": "2026-05-24T10:30:01Z"
       }
     ]
@@ -690,27 +544,27 @@ POST   /api/v1/admin/config/reload                   # 手动触发配置重载
 ## 4. 配置详细设计
 
 **MVP 方案**：本地文件。配置文件存放在 `config/` 目录下，系统启动时从本地磁盘加载。
-**未来扩展**：HLD §4.4 定义的 Git + Webhook + SecretStore 方案，在第二阶段引入。
+
+**未来扩展**：第二阶段演进为 HLD §4.4 定义的 Git + Webhook + SecretStore 方案，目录结构保持不变。
 
 <a id="41-配置仓库目录结构"></a>
 ### 4.1 配置目录结构（MVP）
 
 ```
-config/                                   # 配置文件目录
-├── vendors/                              # 供应商接入配置
-│   ├── crm_system.yaml
-│   ├── ad_platform.yaml
-│   └── stock_system.yaml
-├── mappings/                             # 数据映射规则（按供应商目录组织）
-│   ├── crm_system/
-│   │   ├── order.paid.yaml
-│   │   └── order.refund.yaml
-│   └── ad_platform/
-│       └── user.registered.yaml
-└── routing_rules.yaml                    # 路由规则
+config/                                   # 配置文件根目录
+├── events/                               # 事件 Schema 定义（按业务方组织）
+│   └── {biz}/
+│       ├── route.yaml                    #   路由授权声明（事件→供应商）
+│       └── events/
+│           └── {biz_event}.yaml          #     Schema 定义
+└── vendors/                              # 供应商接入配置（按供应商组织）
+    └── {vendor}/
+        ├── vendor.yaml                   #   供应商接入信息（URL、鉴权、签名等）
+        └── {biz}/
+            └── {biz_event}.yaml          #    投递契约（API 端点 + 映射规则 + 响应判定 + 重试策略）
 ```
 
-**未来扩展**（第二阶段）：引入 Git 配置仓库，目录增加 `event_schemas/` 目录，并通过 Webhook + SecretStore 实现运行时刷新。
+> MVP 阶段事件 Schema 定义直接从上述目录加载，无需 DB 存储。
 
 <a id="42-事件类型-schema-格式"></a>
 ### 4.2 事件类型 Schema 格式（MVP）
@@ -718,7 +572,7 @@ config/                                   # 配置文件目录
 遵循 JSON Schema Draft-07，使用 `x-format` 扩展标注业务精度：
 
 ```yaml
-# event_schemas/order.paid.yaml
+# events/order/events/order.paid.yaml
 event_type: "order.paid"
 description: "订单支付成功通知"
 version: 1
@@ -765,14 +619,14 @@ schema:
 ### 4.3 供应商接入配置格式（MVP）
 
 ```yaml
-# vendors/crm_system.yaml
+# vendors/crm_system/vendor.yaml
 vendor_id: "crm_system"
 name: "CRM 系统"
 enabled: true
 
 request:
   method: PATCH
-  url: "https://crm.company.com/api/v3/contacts/@{payload.user_id}"
+  url: "https://crm.company.com/api/v3/contacts/@{payload:user_id}"
   headers:
     Content-Type: "application/json"
     Accept: "application/json"
@@ -799,14 +653,14 @@ retry_policy:
 
 > HLD §5.3 定义结构化映射 + 插件组合方式。本节给出映射规则的完整格式。
 
-映射规则按 `(vendor_id, event_type)` 组合独立组织在 `mappings/{vendor_id}/{event_type}.yaml` 文件中：
+映射规则按 `(vendor_id, event_type)` 组合独立组织在 `vendors/{vendor_id}/{biz}/{event_type}.yaml` 文件中：
 
 ```yaml
-# mappings/crm_system/order.paid.yaml
+# vendors/crm_system/order/order.paid.yaml
 event_type: "order.paid"
 request:
   method: PATCH
-  url: "https://crm.company.com/api/v3/contacts/@{payload.user_id}"
+  url: "https://crm.company.com/api/v3/contacts/@{payload:user_id}"
   headers:
     Content-Type: "application/json"
     X-Source: "notification-system"
@@ -816,33 +670,53 @@ request:
       properties:
         lifecyclestage: "customer"
         last_paid_date:
-          $source: "@{payload.paid_at}"
+          $source: "@{payload:paid_at}"
           $format: "yyyy-MM-dd"
-        total_revenue: "@{payload.amount}"   # 金额，单位分（供应商按分理解）
+        total_revenue: "@{payload:amount}"   # 金额，单位分（供应商按分理解）
         count:
-          $source: "@{payload.count}"        # payload 中是 "42"（string）
+          $source: "@{payload:count}"        # payload 中是 "42"（string）
           $type: integer                     # 强制转为 42（integer）
+        items:                               # 数组字段：遍历 product_list 生成
+          $source: "@{payload:product_list}"
+          $each:
+            product_id: "@{item:product_id}"
+            quantity: "@{item:qty}"
+            location: "@{item:warehouse}"
+        produce_items:                       # 原始值数组：遍历 produce_list 生成 [{product: 1}, ...]
+          $source: "@{payload:produce_list}"
+          $each:
+            product: "@{item}"
+        produce_str:                         # 原始值数组 + 类型转换
+          $source: "@{payload:produce_list}"
+          $each:
+            product:
+              $source: "@{item}"
+              $type: string
 ```
 
 **映射语法完整参考**：
 
 | 语法 | 示例 | 说明 |
 |------|------|------|
-| `@{payload.field}` | `@{payload.order_id}` | 从 payload 取值 |
-| `@{payload.a.b.c}` | `@{payload.user.address.city}` | 嵌套路径访问 |
+| `@{payload:field}` | `@{payload:order_id}` | 从 payload 取值 |
+| `@{payload:a.b.c}` | `@{payload:user.address.city}` | 嵌套路径访问 |
+| `@{item}` | `@{item}` | 从 `$each` 遍历的当前元素取值（原始值数组：元素本身的值） |
+| `@{item:field}` | `@{item:product_id}` | 从 `$each` 遍历的当前元素取值（对象数组：元素的某字段） |
+| `@{item:a.b}` | `@{item:user.address.city}` | 当前元素的嵌套路径访问 |
 | `"static_value"` | `"customer"` | 静态字符串 |
 | `123` | `29900` | 静态数字 |
-| `$source` | `$source: "@{payload.paid_at}"` | 引擎关键字：取值来源 |
+| `$source` | `$source: "@{payload:paid_at}"` | 引擎关键字：取值来源 |
 | `$format` | `$format: "yyyy-MM-dd"` | 引擎关键字：格式转换 |
-| `$type` | `$type: "string"` | 引擎关键字：强制类型转换。无 `$type` 则保持 payload 原始类型 |
+| `$type` | `$type: "integer"` | 引擎关键字：强制类型转换。无 `$type` 则保持 payload 原始类型 |
+| `$each` | `$each:` 后接元素映射块 | 引擎关键字：数组遍历。配合 `$source` 使用——`$source` 指定源数组，`$each` 内定义每个元素的映射规则。`item` 是保留关键字，在 `$each` 块内表示当前遍历到的数组元素。对象数组用 `@{item:field}` 引用字段，原始值数组用 `@{item}` 引用元素本身的值 |
 
-**DeliverySpec 组合**：MappingConfig 和 ResponseJudgment 按 `(vendor_id, event_type)` 组合为 DeliverySpec（投递规格），由 ConfigLoader 统一返回。Judgment 可选，非 nil 时覆盖供应商级别的默认判决规则。详见 §9.3.1。
+**DeliverySpec 组合**：MappingConfig 和 ResponseJudgment 按 `(vendor_id, event_type)` 组合为 DeliverySpec（投递契约），由 ConfigLoader 统一返回。Judgment 可选，非 nil 时覆盖供应商级别的默认判决规则。详见 §9.3.1。
 
 **`$` 前缀处理规则**：
 
 | 场景 | 处理 | 示例 |
 |------|------|------|
-| `$source` | 引擎关键字，表示取值来源 | `$source: "@{payload.paid_at}"` |
+| `$source` | 引擎关键字，表示取值来源 | `$source: "@{payload:paid_at}"` |
 | `$format` | 引擎关键字，表示格式转换 | `$format: "yyyy-MM-dd"` |
 | `$type` | 引擎关键字，表示强制类型转换 | `$type: "string"`，可选值: `string` / `integer` / `number` / `boolean` |
 | `$$field_name` | 转义为字面量 `$field_name` | `$$dollar_value: "test"` → 输出 `{"$dollar_value": "test"}` |
@@ -850,46 +724,159 @@ request:
 <a id="45-路由规则格式"></a>
 ### 4.5 路由规则格式（MVP）
 
+路由授权声明按业务方组织在 `events/{biz}/route.yaml` 中：
+
 ```yaml
-# routing_rules.yaml
+# events/order/route.yaml
+biz: "order"
 rules:
-  # 简单映射：order.paid → [crm_system, ad_platform]
+  # order.paid → [crm_system, ad_platform]
   - event_type: "order.paid"
     vendor_id: "crm_system"
 
   - event_type: "order.paid"
     vendor_id: "ad_platform"
 
-  # 简单映射：order.refund → [crm_system]
+  # order.refund → [crm_system]
   - event_type: "order.refund"
     vendor_id: "crm_system"
 ```
 
-> **未来扩展**：第二阶段引入条件路由，支持 `condition: "payload.amount > 10000"` 语法，使用 expr 库做轻量表达式评估。
+> **未来扩展**：第二阶段引入条件路由和灰度控制，支持 `condition: "payload.amount > 10000"` 语法，使用 expr 库做轻量表达式评估。
 
 <a id="46-机密引用语法"></a>
 ### 4.6 机密引用语法（未来扩展）
 
-> MVP 直接在配置文件中写明文值。本节的 `${secret:path}` 语法是第二阶段 Git + SecretStore 方案的格式预留。
+> MVP 直接在配置文件中写明文值。本节的 `@{secret:path}` 语法是第二阶段 Git + SecretStore 方案的格式预留。
 
 ```yaml
 # 第二阶段：Git + SecretStore 方案中的机密引用
 auth:
   config:
-    token: "${secret:crm/api_token}"
-    api_key: "${secret:ad_platform/api_key}"
+    token: "@{secret:crm/api_token}"
+    api_key: "@{secret:ad_platform/api_key}"
 ```
 
-**引用路径规范**：`${secret:<path>}`，其中 `<path>` 为 SecretStore 中的键路径。
+**引用路径规范**：`@{secret:<path>}`，其中 `<path>` 为 SecretStore 中的键路径。与数据引用语法 `@{payload:*}`、`@{item:*}` 统一为 `@{scope:path}` 格式。
 
-**解析流程**：ConfigLoader 在加载 YAML 后，扫描所有 `${secret:...}` 引用，调用 SecretStore.Resolve() 替换为实际值。
+**解析流程**：ConfigLoader 在加载 YAML 后，扫描所有 `@{secret:...}` 引用，调用 SecretStore.Resolve() 替换为实际值。
 
 ---
 
 <a id="5-组件内部设计"></a>
 ## 5. 组件内部设计
 
-> HLD §5 定义了各核心组件的职责和方案。本章给出组件的内部接口、处理流水线和关键算法。
+> HLD §5 定义了各核心组件的职责和方案，HLD §3.1 给出了模块分层图。本章补充实现级的**组件依赖图**——展示各业务模块、Port 接口和适配层之间的边界关系与依赖方向。
+>
+> §5.0 是本章的全局背景，服务于 §5.1–§5.6 的详细设计。建议先读 §5.0 了解模块边界，再深入各模块的内部细节。
+
+<a id="50-整体架构与组件图"></a>
+### 5.0 整体架构与组件图
+
+#### 5.0.1 UML 组件图
+
+以下组件图表达系统的模块分解、边界划分和 Port 接口定位。
+
+```mermaid
+flowchart TB
+    subgraph BL["业务逻辑层"]
+        direction TB
+        IG["«component» Ingestion Service"]
+        RT["«component» Router"]
+        MP["«component» MappingEngine"]
+        WK["«component» Worker"]
+    end
+
+    subgraph PORT["端口层 / 依赖倒置边界"]
+        CP["«interface» ConfigProvider"]
+        DBCLI["«interface» DBClient"]
+        MQCLI["«interface» MQClient"]
+    end
+
+    subgraph ADAPT["适配层"]
+        FC["FileConfigLoader"]
+        PG["PostgreSQLAdapter"]
+        RMQ["RabbitMQAdapter"]
+    end
+
+    IG -.->|依赖| CP
+    IG -.->|依赖| DBCLI
+    IG -.->|依赖| MQCLI
+
+    RT -.->|依赖| CP
+    RT -.->|依赖| DBCLI
+    RT -.->|依赖| MQCLI
+
+    MP -.->|依赖| CP
+
+    WK -.->|依赖| CP
+    WK -.->|依赖| DBCLI
+    WK -.->|依赖| MQCLI
+
+    CP <--- |实现| FC
+    DBCLI <--- |实现| PG
+    MQCLI <--- |实现| RMQ
+
+    IG ==MQ 触发==> RT
+    RT ==MQ 投递==> WK
+    WK ..->|调用| MP
+```
+
+**图例说明**：
+
+| 连线 | 含义 | 语气 |
+|------|------|------|
+| `-.->` 虚线 | 接口依赖（依赖方 → 接口） | 编译期契约 |
+| `<---` 实线反向 | 接口实现（实现方 → 接口） | 编译期契约 |
+| `==>` 粗实线 | MQ 消息流 | 运行时数据流 |
+| `..->` 点线 | 同进程同步调用 | 运行时调用 |
+
+#### 5.0.2 模块边界与 Port 接口定位
+
+| 模块 | 所属层 | 内部职责 | 外部依赖（通过 Port） | 边界方式 |
+|------|--------|---------|---------------------|---------|
+| Ingestion Service | 业务逻辑 | schema 校验、幂等写入、MQ 触发发布 | ConfigProvider（读 event schema）<br/>DBClient（写 notification）<br/>MQClient（发布触发消息） | 同步 HTTP 请求进入，MQ 消息输出 |
+| Router | 业务逻辑 | 消费触发消息、匹配路由规则、创建 delivery_task | ConfigProvider（读路由规则）<br/>DBClient（写 task、读 notification）<br/>MQClient（发布投递消息） | MQ 消息进入，MQ 消息输出 |
+| MappingEngine | 业务逻辑 | 引用解析（resolveField）、$source 处理、格式转换 | ConfigProvider（读映射规则） | 纯函数，被 Worker 同进程同步调用 |
+| Worker | 业务逻辑 | HTTP 调用、重试判定、死信处理 | ConfigProvider（读供应商配置）<br/>DBClient（更新 task 状态、写死信）<br/>MQClient（发布延迟重试消息） | MQ 消息进入，MQ 消息或 HTTP 调用输出 |
+| FileConfigLoader | 适配层 | 从本地 YAML 文件加载全量配置 | 无（实现 ConfigProvider） | 接口桥接 |
+| PostgreSQLAdapter | 适配层 | pgx 数据库连接与查询 | 无（实现 DBClient） | 接口桥接 |
+| RabbitMQAdapter | 适配层 | amqp091 消息发布 | 无（实现 MQClient） | 接口桥接 |
+
+#### 5.0.3 设计要点
+
+**依赖方向**：
+
+- 业务模块 → Port 接口 → Adapter 实现
+- 业务模块**不直接依赖**任何基础设施（PostgreSQL、RabbitMQ）
+- 适配层**实现** Port 接口，被 `main()` 注入到业务模块
+
+**模块间通信**：
+
+| 上下游 | 通信方式 | 说明 |
+|--------|---------|------|
+| Ingestion → Router | MQ 触发通道（`notification.trigger`） | 异步消息，见 §6.2 |
+| Router → Worker | MQ 投递队列（`notification.delivery`） | 异步消息，见 §6.3 |
+| MappingEngine → Worker（逆向） | 同进程同步调用 | Worker 调用链上的一个步骤，见 §5.4 序列图 |
+| Worker → 供应商 API | HTTP | 外部系统，见 §5.4 |
+
+**模块边界原则**：
+
+1. 所有 Port 接口定义在 `internal/port/` 包中，而非实现所在的包
+2. 业务模块间的唯一异步通道是 MQ，模块间不共享内存状态
+3. 业务模块必须通过 Port 接口访问外部资源，禁止直接导入 Adapter 实现
+4. Port 接口位于业务逻辑层和适配层之间的"依赖倒置边界"——业务逻辑侧依赖接口的语义，适配侧实现接口的行为。接口本身不属于任何一侧，而是两侧共同遵守的契约
+
+#### 5.0.4 与 HLD §3.1 分层图的区别
+
+| | HLD §3.1 分层图 | DD §5.0 组件图 |
+|--|-----------------|---------------|
+| **视角** | 高层职责划分，管理平面 + 核心平面 + 基础设施 | 实现级组件依赖，关注代码层面的边界 |
+| **包含** | 限流熔断、调用方管理、可观测性等管理功能 | 只包含 MVP 实现组件 |
+| **强调** | 分层和层次之间的位置关系 | 依赖倒置边界和 Port 接口定位 |
+| **目标读者** | 架构评审者、跨团队沟通 | 实现开发者、模块划分决策 |
+
+> HLD 图回答"系统分几层、每层有什么"，DD 图回答"模块间怎么依赖、Port 接口在哪"。两者不重复，HLD 是 DD 的输入，DD 是 HLD 到代码的映射。
 
 <a id="51-接收网关"></a>
 ### 5.1 接收网关
@@ -919,49 +906,41 @@ sequenceDiagram
 
 #### 5.1.2 校验与幂等处理逻辑
 
-```go
-// Submit 处理提交通知的核心逻辑（MVP）
-func (s *IngestionService) Submit(ctx context.Context, req *SubmitRequest) (*SubmitResponse, error) {
-    // 1. 校验 payload 符合事件类型的 JSON Schema
-    schema, err := s.db.GetEventSchema(ctx, req.EventType)
-    if err != nil {
-        return nil, ErrEventNotFound
-    }
-    if errs := s.validator.Validate(schema, req.Payload); len(errs) > 0 {
-        return nil, NewSchemaValidationError(errs)
-    }
+**处理流程**（伪码）：
 
-    // 2. 幂等处理：INSERT ... ON CONFLICT DO UPDATE
-    //    idempotent_key 为空时系统自动生成 UUID
-    idempotentKey := req.IdempotentKey
-    if idempotentKey == "" {
-        idempotentKey = uuid.New().String()
-    }
+```
+Submit(request):
+  // Step 1: 校验 payload 是否符合事件类型的 JSON Schema
+  // 从本地 config/events/ 目录加载该事件类型的 Schema 定义
+  schemaDefinition ← 加载事件类型的 Schema 定义(request.event_type)
+  
+  ● 该事件类型未在系统中注册 → 拒收通知，返回 422 EVENT_NOT_FOUND
 
-    notificationID, isNew, err := s.db.UpsertNotification(ctx, UpsertParams{
-        CallerID:      req.CallerID,
-        EventType:     req.EventType,
-        IdempotentKey: idempotentKey,
-        Payload:       req.Payload,
-    })
-    if err != nil {
-        return nil, ErrServiceUnavailable
-    }
+  validationErrors ← 用 Schema 校验 payload(schemaDefinition, request.payload)
+  ● payload 中字段缺失或类型不匹配 → 拒收并告知具体出错字段，返回 422 SCHEMA_VALIDATION_FAILED
 
-    // 2. 只有新创建的通知才触发 MQ 消息
-    if isNew {
-        if err := s.mq.PublishTrigger(ctx, notificationID); err != nil {
-            // MQ 发布失败 → 返回成功但日志记录异常
-            // 调用方可通过 idempotent_key 重试，幂等语义保证不会重复创建
-            s.logger.Error("publish trigger failed", "notification_id", notificationID, "error", err)
-        }
-    }
+  // Step 2: 幂等写入 DB
+  // 同一 (caller_id, idempotent_key) 不会重复创建
+  idempotentKey ← 取 request.idempotent_key，若未提供则自动生成 UUID()
 
-    return &SubmitResponse{
-        NotificationID: notificationID,
-        Status:         "PENDING",
-    }, nil
-}
+  notificationId ← 幂等插入通知记录(
+    callerId: request.caller_id,
+    eventType: request.event_type,
+    idempotentKey: idempotentKey,
+    payload: request.payload
+  )
+
+  // Step 3: 将通知发往 MQ 触发通道，由路由分发器消费后创建投递任务
+  // 幂等重试时可能前次 MQ 未投出，无条件重发
+  // MQ 重复消息安全——路由分发器按 notification_id 幂等处理
+  publishResult ← 向 MQ 投递触发通知(notificationId)
+  if publishResult 为失败:
+    // MQ 发布失败不影响返回——通知已在 DB 持久化
+    // 调用方可持 idempotent_key 重试，幂等语义保证不会重复创建
+    记录警告日志("MQ publish failed", notificationId)
+
+  响应 ← { notificationId: notificationId, status: "PENDING" }
+  return 响应
 ```
 
 #### 5.1.3 超时与错误处理
@@ -1004,56 +983,40 @@ sequenceDiagram
 
 #### 5.2.2 delivery_tasks 创建逻辑
 
-```go
-// Route 处理单条通知的路由逻辑（MVP）
-func (s *RoutingService) Route(ctx context.Context, notificationID string) error {
-    // 1. 幂等检查：已处理过的通知直接跳过
-    if s.alreadyProcessed(ctx, notificationID) {
-        return nil
-    }
+**处理流程**（活动图）：
 
-    // 2. 加载通知
-    notif, err := s.db.GetNotification(ctx, notificationID)
-    if err != nil {
-        return fmt.Errorf("load notification %s: %w", notificationID, err)
-    }
+```mermaid
+flowchart TD
+    START(["Route(notificationId)"])
+    IDEMP{"已有 delivery_tasks？"}
 
-    // 3. 加载路由规则，按 event_type 匹配供应商
-    rules := s.config.GetRoutingRules(notif.EventType)
+    subgraph CREATE_TASKS["创建 delivery_tasks"]
+        LOAD["加载通知 & 路由规则"]
+        VENDOR{"有匹配供应商？"}
+        CREATE["DB 逐一创建 delivery_task"]
+    end
 
-    // 4. 确定目标供应商列表（MVP 仅做事件→供应商映射，不支持条件路由）
-    var matchedVendors []string
-    for _, rule := range rules {
-        matchedVendors = append(matchedVendors, rule.VendorID)
-    }
-    matchedVendors = unique(matchedVendors)
+    subgraph PUB["MQ 发布"]
+        PUBLISH["向 MQ 逐一发消息"]
+        ALL_OK{"全部发布成功？"}
+    end
 
-    if len(matchedVendors) == 0 {
-        // 没有匹配的供应商，标记通知为 FAILED
-        s.db.UpdateNotificationStatus(ctx, notificationID, "FAILED")
-        return nil
-    }
+    DONE["处理完成，ACK 触发消息"]
+    RETRY["放弃处理，NACK 触发消息（下次重试）"]
 
-    // 5. 事务：创建 delivery_tasks + PUBLISH MQ
-    tasks, err := s.db.CreateDeliveryTasks(ctx, notificationID, matchedVendors)
-    if err != nil {
-        return fmt.Errorf("create delivery tasks: %w", err)
-    }
+    START --> IDEMP
+    IDEMP -- "是" --> PUB
+    IDEMP -- "否" --> CREATE_TASKS
+    LOAD --> VENDOR
+    VENDOR -- "空" --> DONE
+    VENDOR -- "有" --> CREATE
+    CREATE --> PUB
+    PUBLISH --> ALL_OK
+    ALL_OK -- "是" --> DONE
+    ALL_OK -- "否" --> RETRY
 
-    for _, task := range tasks {
-        if err := s.mq.PublishDelivery(ctx, task.VendorID, task.ID); err != nil {
-            s.logger.Error("publish delivery task failed",
-                "vendor_id", task.VendorID,
-                "task_id", task.ID,
-                "error", err)
-        }
-    }
-
-    // 6. 更新通知状态（事务外，最终一致）
-    _ = s.db.UpdateNotificationStatus(ctx, notificationID, "DELIVERING")
-
-    return nil
-}
+    CREATE_TASKS -.-|"任何一步系统异常"| RETRY
+    PUB -.-|"任何一步系统异常"| RETRY
 ```
 
 <a id="53-请求拼装引擎"></a>
@@ -1061,276 +1024,267 @@ func (s *RoutingService) Route(ctx context.Context, notificationID string) error
 
 > HLD §5.3 定义结构化映射 + 插件组合。本节给出引擎的引用解析流程和接口定义。
 
-```go
-// MappingEngine 请求拼装引擎
-// HLD 明令禁止在配置中引入函数管道，L2-L5 复杂转换走 plugin
-type MappingEngine struct{}
+**算法依赖关系图**：
 
-// BuildRequest 根据供应商配置和 payload 构建完整 HTTP 请求
-func (e *MappingEngine) BuildRequest(
-    vendor *VendorConfig,
-    mapping *MappingConfig,
-    payload map[string]any,
-) (*http.Request, error) {
-    // 1. 解析 URL（替换 @{} 引用）
-    url, err := e.resolveString(mapping.Request.URL, payload)
-    if err != nil {
-        return nil, fmt.Errorf("resolve url: %w", err)
-    }
+下方展示了映射引擎中各算法的协作关系：一个节点代表一个算法，边上的标签说明"在什么场景下调用"。
 
-    // 2. 解析 Headers
-    headers := make(http.Header)
-    for k, v := range mapping.Request.Headers {
-        resolved, err := e.resolveString(v, payload)
-        if err != nil {
-            return nil, fmt.Errorf("resolve header %s: %w", k, err)
-        }
-        headers.Set(k, resolved)
-    }
+```mermaid
+flowchart TD
+    BUILD["BuildRequest"]
 
-    // 3. 构建 Body
-    body, err := e.buildBody(mapping.Request.Body, payload)
-    if err != nil {
-        return nil, fmt.Errorf("build body: %w", err)
-    }
+    NESTED["getNestedField: 嵌套路径取值"]
+    FIELD["resolveField: 引用表达式提取（处理 @{}，纯引用保持原始类型）"]
+    CONVERT["convertType: 强制类型转换"]
 
-    // 4. 组装 http.Request
-    req, err := http.NewRequest(mapping.Request.Method, url, bytes.NewReader(body))
-    if err != nil {
-        return nil, err
+    NODE["resolveNode: 递归解析引擎"]
+
+    SOURCE["resolveSourceDirective: 统一处理 $source / $format / $type / $each"]
+
+    BUILD -->|"解析 URL/Header 时替换 @{}"| FIELD
+    BUILD -->|"构造 body（mapping 类型）"| NODE
+
+    NODE -->|"表达式求值（替换 @{}）"| FIELD
+    NODE -->|"节点含 $source 键（含 $each 时内部走数组遍历）"| SOURCE
+    NODE -->|"普通字典 / 数组，递归"| NODE
+
+    SOURCE -->|"提取原始值"| FIELD
+    SOURCE -->|"类型转换"| CONVERT
+    SOURCE -->|"遍历映射每个元素（当含 $each 时）"| NODE
+
+    FIELD -->|"按路径取值"| NESTED
+```
+
+**MappingEngine 结构**：
+
+```mermaid
+classDiagram
+    class MappingEngine {
+        +BuildRequest(vendor, mapping, payload) Request
+        -resolveNode(node, ctx) Any
+        -resolveField(expr, ctx) Any
+        -buildBody(bodyConfig, ctx) Bytes
     }
-    req.Header = headers
-    return req, nil
-}
+```
+
+**BuildRequest 流程**（伪码）：
+
+```
+BuildRequest(vendor, mapping, payload):
+  // Step 0: 将原始 payload 包装为上下文容器
+  // ctx = {payload: 原始通知数据}
+  // resolveNode 及其内部算法都通过 ctx 这个统一接口取值
+  // 未来可扩展 ctx 的键，如 ctx.global、ctx.env 等
+  ctx ← {payload: payload}
+
+  // Step 1: 解析 URL——用 resolveField 将 @{} 引用替换为实际值并拼接为字符串
+  // 例如 "https://crm.com/@{payload:user_id}" → "https://crm.com/u_12345"
+  // URL 中通常是混合模板（前缀+引用），resolveField 自动拼接为字符串
+  resolvedUrl ← resolveField(mapping.request.url, ctx)
+
+  // Step 2: 解析 Header——每条 Header 值都可能含 @{}，同样用 resolveField 处理
+  headers ← 空字典
+  for each (headerName, headerValue) ∈ mapping.request.headers:
+    headers[headerName] ← resolveField(headerValue, ctx)
+
+  // Step 3: 构造 Body——根据 body.type 路由到不同构造方式
+  // body.type ∈ { none, raw, mapping, plugin }
+  // 其中 mapping 类型走递归解析引擎 resolveNode（见 §5.3.2）
+  body ← buildBody(mapping.request.body, ctx)
+
+  // Step 4: 构造完整 HTTP 请求
+  return HTTP请求(
+    method: mapping.request.method,
+    url: resolvedUrl,
+    headers: headers,
+    body: body
+  )
 ```
 
 #### 5.3.1 字段引用解析器
 
-```go
-// resolveString 解析字符串中的 @{payload.field} 引用
-// 不支持函数管道——HLD 明确禁止。复杂转换走 plugin
-func (e *MappingEngine) resolveString(tmpl string, payload map[string]any) (string, error) {
-    // 只识别 @{payload.field} 和 @{payload.a.b.c} 两种引用
-    re := regexp.MustCompile(`@\{payload\.([^}]+)\}`)
-    return re.ReplaceAllStringFunc(tmpl, func(match string) string {
-        // 去掉 @{payload. 和 }
-        path := match[len("@{payload.") : len(match)-1]
-        val := getNestedField(payload, path)
-        return tostring(val)
-    }), nil
-}
+**resolveField — 引用表达式提取**（伪码）已在下方 §5.3.2 定义，此处先给出其内部依赖的底层工具。
 
-// getNestedField 按递归路径从 map 中取值
-// path 已由 resolveString 剥去 "payload." 前缀，如 "user.address.city"
-func getNestedField(data map[string]any, path string) any {
-    if path == "" {
-        return nil
-    }
-    parts := strings.Split(path, ".")
-    current := data
-    for i, part := range parts {
-        val, ok := current[part]
-        if !ok {
-            return nil
-        }
-        if i == len(parts)-1 {
-            return val
-        }
-        nested, ok := val.(map[string]any)
-        if !ok {
-            return nil
-        }
-        current = nested
-    }
-    return nil
-}
+**getNestedField — 嵌套路径取值**（伪码）：
+
+```
+getNestedField(data, path):
+  // 仅被 resolveField 内部调用
+  // 从嵌套字典 data 中按点分路径取出值
+  //
+  // 例：getNestedField({user: {address: {city: "北京"}}}, "user.address.city")
+  // → 返回 "北京"
+
+  parts ← path 按 "." 分割（如 "user.address.city" → ["user", "address", "city"]）
+  current ← data
+
+  依次遍历 parts 中的每个字段名 field:
+    if field 不在 current 中 → 查找失败，返回 null
+    if field 是 parts 最后一段 → return current[field]（找到最终值）
+    // 进入下一层
+    if current[field] 不是字典 → 路径中断，返回 null
+    current ← current[field]
 ```
 
 #### 5.3.2 $ 关键字处理
 
-```go
-// buildBody 处理 body 构造，支持 mapping / raw / none / plugin 四种模式
-func (e *MappingEngine) buildBody(bodyCfg *BodyConfig, payload map[string]any) ([]byte, error) {
-    switch bodyCfg.Type {
-    case "none":
-        return nil, nil
-    case "raw":
-        return e.resolveRawBody(bodyCfg.Template, payload)
-    case "mapping":
-        return e.resolveMappingBody(bodyCfg.Template, payload)
-    case "plugin":
-        plugin := GetMapperPlugin(bodyCfg.Plugin)
-        if plugin == nil {
-            return nil, fmt.Errorf("mapper plugin %q not found", bodyCfg.Plugin)
-        }
-        return plugin.BuildBody(payload, bodyCfg.PluginConfig)
-    default:
-        return nil, fmt.Errorf("unknown body type: %s", bodyCfg.Type)
-    }
-}
+**处理模式总览**：
 
-// resolveMappingBody 递归处理 mapping 模板
-func (e *MappingEngine) resolveMappingBody(template any, payload map[string]any) ([]byte, error) {
-    resolved, err := e.resolveNode(template, payload)
-    if err != nil {
-        return nil, err
-    }
-    return json.Marshal(resolved)
-}
+| Body 类型 | 说明 | 适用场景 |
+|-----------|------|----------|
+| `none` | 无 body | GET/DELETE 请求 |
+| `raw` | 将模板字符串中的 `@{}` 替换后逐字输出 | 简单的字符串 body |
+| `mapping` | 递归解析 `$source`、`$each`、`$format`、`$type` 指令，输出 JSON | 结构化映射 |
+| `plugin` | 委托外部插件构造 body | 复杂/定制转换 |
 
-// resolveNode 递归解析节点
-func (e *MappingEngine) resolveNode(node any, payload map[string]any) (any, error) {
-    switch v := node.(type) {
-    case string:
-        // 处理 @{...} 引用
-        return e.resolveString(v, payload)
-    case map[string]interface{}:
-        // 处理 $ 关键字
-        if source, ok := v["$source"]; ok {
-            return e.resolveSourceDirective(v, payload)
-        }
-        result := make(map[string]interface{})
-        for key, val := range v {
-            // $$ 前缀转义为 $
-            actualKey := strings.TrimPrefix(key, "$$")
-            resolved, err := e.resolveNode(val, payload)
-            if err != nil {
-                return nil, err
-            }
-            result[actualKey] = resolved
-        }
-        return result, nil
-    case []interface{}:
-        result := make([]interface{}, len(v))
-        for i, val := range v {
-            resolved, err := e.resolveNode(val, payload)
-            if err != nil {
-                return nil, err
-            }
-            result[i] = resolved
-        }
-        return result, nil
-    default:
-        return v, nil
-    }
-}
+**resolveNode — 递归解析引擎**（活动图）：
 
-// resolveSourceDirective 处理 $source/$format/$type 指令
-// 无 $type 时保持 payload 原始类型；有 $type 时强制转换
-func (e *MappingEngine) resolveSourceDirective(v map[string]any, payload map[string]any) (any, error) {
-    sourceExpr := v["$source"].(string)
-    
-    // 从 payload 提取原始值
-    raw, err := e.resolveField(sourceExpr, payload)
-    if err != nil {
-        return nil, err
-    }
+```mermaid
+flowchart TD
+    ENTER(["resolveNode(node, ctx)"])
+    TYPE{"node 类型？"}
 
-    // 类型转换（在格式转换前执行，format 作用于转换后的值）
-    if typeName, ok := v["$type"]; ok {
-        converted, err := convertType(raw, typeName.(string))
-        if err != nil {
-            return nil, err
-        }
-        raw = converted
-    }
+    TYPE -->|"String"| FIELD["resolveField(node, ctx)"]
+    TYPE -->|"Array"| ARRAY["遍历每个元素，递归 resolveNode"]
+    TYPE -->|"Number / Boolean / null"| PRIMITIVE["原样返回"]
+    TYPE -->|"Dict"| MAP{"含 $source 键？"}
 
-    // 格式转换（仅处理时间戳格式等声明式转换）
-    if format, ok := v["$format"]; ok {
-        return formatValue(tostring(raw), format.(string))
-    }
-
-    return raw, nil
-}
-
-// convertType 强制类型转换
-// 支持: string, integer, number, boolean
-func convertType(val any, typeName string) (any, error) {
-    switch typeName {
-    case "string":
-        return tostring(val), nil
-    case "integer":
-        switch v := val.(type) {
-        case int, int64, int32:
-            return v, nil
-        case float64:
-            return int64(v), nil
-        case string:
-            n, err := strconv.ParseInt(v, 10, 64)
-            if err != nil {
-                return nil, fmt.Errorf("cannot convert %q to integer", v)
-            }
-            return n, nil
-        default:
-            return nil, fmt.Errorf("cannot convert %T to integer", val)
-        }
-    case "number":
-        switch v := val.(type) {
-        case int, int64:
-            return v, nil
-        case float64:
-            return v, nil
-        case string:
-            f, err := strconv.ParseFloat(v, 64)
-            if err != nil {
-                return nil, fmt.Errorf("cannot convert %q to number", v)
-            }
-            return f, nil
-        default:
-            return nil, fmt.Errorf("cannot convert %T to number", val)
-        }
-    case "boolean":
-        switch v := val.(type) {
-        case bool:
-            return v, nil
-        case string:
-            return strconv.ParseBool(v)
-        case int, int64:
-            n := val.(int64)
-            return n != 0, nil
-        default:
-            return nil, fmt.Errorf("cannot convert %T to boolean", val)
-        }
-    default:
-        return nil, fmt.Errorf("unknown type: %s", typeName)
-    }
-}
-
-// resolveField 从 $source 表达式中提取原始值
-// 纯 "@{payload.field}" → 返回原始类型
-// 含前后缀如 "prefix_@{payload.field}_suffix" → 全部转为字符串拼接
-func (e *MappingEngine) resolveField(expr string, payload map[string]any) (any, error) {
-    re := regexp.MustCompile(`@\{payload\.([^}]+)\}`)
-    loc := re.FindStringIndex(expr)
-    if loc == nil {
-        return expr, nil // 无引用的纯字符串
-    }
-    
-    // 只有单个纯引用（无前后缀），返回原始值
-    if loc[0] == 0 && loc[1] == len(expr) {
-        path := expr[len("@{payload.") : len(expr)-1]
-        val := getNestedField(payload, path)
-        return val, nil
-    }
-    
-    // 有前后缀或有多处引用，按字符串拼接
-    result := re.ReplaceAllStringFunc(expr, func(match string) string {
-        path := match[len("@{payload.") : len(match)-1]
-        return tostring(getNestedField(payload, path))
-    })
-    return result, nil
-}
+    MAP -->|"否"| NORMAL["遍历字段，递归处理值<br>（$$ 前缀转义为 $）"]
+    MAP -->|"是"| SOURCE["resolveSourceDirective(node, ctx)<br>内部按 $each 分派"]
 ```
+
+**resolveSourceDirective — $source 处理**（伪码）：
+
+```
+resolveSourceDirective(directive, ctx):
+  // 被 resolveNode 在任何含有 $source 键的字典节点时调用
+  // 统一处理 $source / $format / $type / $each 四条指令
+  //
+  // ctx = {payload: 原始通知} 或 {payload: 原始通知, item: 当前元素}
+  // 分两个场景：
+  //   场景 A：$source + $each → 数组遍历映射（委托 resolveEachDirective）
+  //   场景 B：$source（可选 $type/$format）→ 单值提取 + 转换
+
+  // Step 0: 判断是否需要走数组遍历
+  if directive 含有键 "$each":
+    return resolveEachDirective(directive, ctx)
+    // resolveEachDirective 内部仍使用 resolveField 解析 $source
+    // 但 $source 在此必须是数组类型
+
+  // Step 1: 从 ctx 中提取 $source 路径指向的原始值
+  // resolveField 通过 ctx[scope] 定位数据源：
+  //   ctx["payload"] → 原始通知数据
+  //   ctx["item"]    → $each 当前元素（$each 外不存在）
+  // 纯引用 "@{payload:amount}" → 保持 int/bool 原始类型
+  // 混合模板 "prefix_@{field}" → 全部转为字符串拼接
+  rawValue ← resolveField(directive["$source"], ctx)
+
+  // Step 2: 若存在 $type，按目标类型强制转换（在 $format 之前执行）
+  if directive 含有键 "$type":
+    rawValue ← convertType(rawValue, directive["$type"])
+
+  // Step 3: 若存在 $format，按指定格式输出字符串
+  // formatValue 根据 rawValue 的原始类型和 $format 推断转换方式：
+  //   int + 日期格式     → 按 unix_s 时间戳解析后格式化
+  //   string + 日期格式  → 按 ISO 8601 解析后格式化
+  // $format 仅处理日期/时间格式转换（详见 HLD §5.3）
+  // 不应先 toString(rawValue) 再传——那样会丢失类型信息，
+  // 导致 formatValue 无法区分 int 时间戳和日期字符串
+  if directive 含有键 "$format":
+    return formatValue(rawValue, directive["$format"])
+
+  return rawValue
+```
+
+**resolveField — 引用表达式提取**（伪码）：
+
+```
+resolveField(expr, ctx):
+  // 被 BuildRequest（URL/Header 解析）、resolveNode（字符串节点）、
+  // resolveSourceDirective（$source 提取）调用
+  //
+  // ctx 是统一的数据上下文容器：
+  //   ctx["payload"] → 原始通知数据
+  //   ctx["item"]    → $each 当前元素（仅在 $each 块内存在）
+  //   @{scope:path}  → ctx[scope] 中按 path 取值
+  //
+  // 返回行为取决于表达式写法：
+
+  expr 不包含任何 @{} 引用:
+    return expr 原值（纯静态字符串）
+
+  expr 是纯引用形式 "@{payload:amount}"（一个 @{} 且无前后缀）:
+    // 保持 int/bool/number 的原始类型，不自动转字符串
+    // 目的是让后续的 convertType 能基于原始类型做转换
+    scope ← 提取引用标识（"payload" 或 "item"）
+    path  ← 提取字段路径
+    return getNestedField(ctx[scope], path)
+
+  expr 含前后缀文本 "prefix_@{field}_suffix" 或含多个 @{}:
+    // 文字和值混在一起，只能整体拼接为字符串
+    for 每处 @{} 引用:
+      scope ← 提取引用标识
+      path  ← 提取字段路径
+      转为字符串(getNestedField(ctx[scope], path))
+    return 整体拼接后的字符串
+```
+
+**resolveEachDirective — $source + $each 数组遍历**（伪码）：
+
+```
+resolveEachDirective(directive, ctx):
+  // 被 resolveSourceDirective 内部调用（当指令中含有 $each 键时）
+  // 处理 $source + $each 组合：遍历数组每个元素，逐一应用 $each 内的映射规则
+  //
+  // ctx 传入时为 {payload: 原始通知}，遍历每个元素时扩展为
+  // {payload: 原始通知, item: 当前元素}，传递给嵌套的 resolveNode
+  //
+  // @{payload:xxx} 仍解析到 ctx.payload（原始通知字段）
+  // @{item:xxx}    解析到 ctx.item（当前遍历元素字段）
+  // 两者通过键名隔离，永不冲突
+  //
+  // 内部使用：
+  //   resolveField($source) — 从 ctx 中取出源数组
+  //   resolveNode($each) — 对每个元素递归执行映射
+
+  srcArray ← resolveField(directive["$source"], ctx)
+  // resolveField 自动从 ctx[scope] 取值，这里 scope 由 $source 写法决定
+  if srcArray 不是数组类型:
+    报配置错，终止处理
+
+  result ← 空列表
+  for each elem ∈ srcArray:
+    // 扩展 ctx：保留原始所有键（payload 等），额外加入当前元素作为 item 数据源
+    // 因每次遍历创建新对象，不修改上层 ctx
+    mapped ← resolveNode(
+      directive["$each"],
+      {...ctx, item: elem}
+    )
+    result 追加 mapped
+
+  return result
+```
+
+**convertType — 强制类型转换**：
+
+| 目标类型 | 输入 int | 输入 float64 | 输入 string | 输入 bool |
+|----------|---------|-------------|------------|----------|
+| `string` | → toString | → toString | → 原值 | → toString |
+| `integer` | → 原值 | → int64(int) | → ParseInt(s) | → error |
+| `number` | → 原值 | → 原值 | → ParseFloat(s) | → error |
+| `boolean` | → n != 0 | → error | → ParseBool(s) | → 原值 |
 
 #### 5.3.3 插件接口
 
-```go
-// MapperPlugin 处理 body.type = plugin 的场景
-// 插件仅负责 Body 构造，URL 和 Header 的 @{} 引用、签名、鉴权仍由引擎统一处理
-type MapperPlugin interface {
-    ID() string                                              // 插件唯一标识
-    BuildBody(payload map[string]any, config any) ([]byte, error)  // 构造 Body
-}
+**MapperPlugin 接口定义**：
+
+```mermaid
+classDiagram
+    class MapperPlugin {
+        <<interface>>
+        +ID() String
+        +BuildBody(payload, config) Bytes
+    }
+    note "插件仅负责 Body 构造\nURL 和 Header 的 @{} 引用、\n签名、鉴权仍由引擎统一处理"
 ```
 
 <a id="54-投递工作器"></a>
@@ -1340,190 +1294,252 @@ type MapperPlugin interface {
 
 #### 5.4.1 Worker 池管理
 
-```go
-// WorkerPool 共享 Worker 池（MVP 所有供应商共用）
-type WorkerPool struct {
-    Concurrency int
-    queueName   string
+**WorkerPool 结构**：
 
-    workerWg    sync.WaitGroup
-    cancel      context.CancelFunc
-
-    deliverySvc  *DeliveryService
-    mapper       *MappingEngine
-    config       *RuntimeConfig
-    db           *DBClient
-    mq           *MQClient
-    logger       *Logger
-}
-
-// Start 启动 Worker 池中的 N 个 Worker 协程
-func (p *WorkerPool) Start(ctx context.Context) {
-    ctx, p.cancel = context.WithCancel(ctx)
-    for i := 0; i < p.Concurrency; i++ {
-        p.workerWg.Add(1)
-        go p.runWorker(ctx, i)
+```mermaid
+classDiagram
+    class WorkerPool {
+        +Int Concurrency
+        -String queueName
+        +Start(ctx)
+        +Stop(ctx)
+        -runWorker(ctx, workerId)
+        -processMessage(ctx, msg)
     }
-}
+```
 
-// runWorker 单个 Worker 的消费循环
-func (p *WorkerPool) runWorker(ctx context.Context, id int) {
-    defer p.workerWg.Done()
+**Worker 消费循环**（伪码）：
 
-    // 每个 Worker 独立 MQ Channel
-    ch, _ := p.mq.NewChannel()
-    defer ch.Close()
+```
+// 启动 Worker 池
+Start(ctx):
+  按设定的并发数逐一启动 Worker 协程
 
-    _ = ch.Qos(1, 0, false) // 每次消费 1 条
+// 单个 Worker 的消费循环
+runWorker(ctx):
+  建立独立的 MQ 通道（每个 Worker 独享，避免通道争用）
+  限制每次只拉取 1 条消息（prefetch=1），防止消息堆积在本地缓冲区
 
-    msgs, _ := ch.Consume(p.queueName, fmt.Sprintf("worker-%d", id),
-        false, // auto-ack: false, 手动 ACK
-        false, false, false, nil,
-    )
+  持续监听投递队列：
+    从队列中取一条消息
+    若队列已关闭或被上层通知停止 → 退出循环
+    
+    处理该消息（processMessage）
+    // Worker 在此阻塞直到该消息处理完成，才拉取下一条
 
-    for {
-        select {
-        case <-ctx.Done():
-            return
-        case msg, ok := <-msgs:
-            if !ok {
-                return
-            }
-            p.processMessage(ctx, msg)
-        }
-    }
-}
+  关闭 MQ 通道，清理资源
 ```
 
 #### 5.4.2 单条消息处理流程
 
-```go
-// processMessage 处理单条投递消息
-func (p *WorkerPool) processMessage(ctx context.Context, msg amqp.Delivery) {
-    traceID := msg.Headers["x-trace-id"]
-    ctx = WithTraceID(ctx, traceID)
+**Worker 消息处理流程**：
 
-    var deliveryMsg DeliveryMessage
-    json.Unmarshal(msg.Body, &deliveryMsg)
+```mermaid
+sequenceDiagram
+    participant MQ as RabbitMQ<br/>(delivery.queue)
+    participant W as Worker
+    participant DB as PostgreSQL
+    participant Config as RuntimeConfig
+    participant Mapper as MappingEngine
+    participant V as 供应商 API
 
-    // 1. 加载 DeliveryTask
-    task, err := p.db.GetDeliveryTask(ctx, deliveryMsg.DeliveryTaskID)
-    if err != nil {
-        p.logger.Error("load delivery task failed", "task_id", deliveryMsg.DeliveryTaskID, "error", err)
-        msg.Nack(false, true)
-        return
-    }
+    MQ-->>W: CONSUME delivery(delivery_task_id)
+    W->>DB: ① 加载 DeliveryTask
+    DB-->>W: task
+    W->>Config: ② 加载供应商配置 + DeliverySpec
+    Config-->>W: vendor config, mapping
+    W->>DB: ③ 加载通知 payload
+    DB-->>W: payload
+    W->>Mapper: ④ BuildRequest(vendor, mapping, payload)
+    Mapper-->>W: HTTP Request
+    W->>V: ⑤ HTTP 调用
+    V-->>W: Response
 
-    // 2. 加载配置
-    vendorCfg := p.config.GetVendorConfig(task.VendorID)
-    deliverySpec := p.config.GetDeliverySpec(task.VendorID, task.EventType)
+    alt 连接失败（瞬态错误）
+        W->>W: handleRetry → DLX+TTL 延迟重投
+    else 响应判定成功
+        W->>DB: UPDATE status = SUCCEEDED
+        W->>MQ: ACK
+    else 可重试失败
+        W->>W: handleRetry → DLX+TTL 延迟重投
+    else 不可重试失败 / 映射失败
+        W->>DB: INSERT dead_letter_record
+        W->>MQ: ACK
+    end
+```
 
-    // 3. 加载 payload
-    payload, err := p.db.GetNotificationPayload(ctx, task.NotificationID)
-    if err != nil {
-        p.logger.Error("load payload failed", "notification_id", task.NotificationID, "error", err)
-        msg.Nack(false, true)
-        return
-    }
+**processMessage 伪码**：
 
-    // 4. 请求拼装
-    req, err := p.mapper.BuildRequest(vendorCfg, &deliverySpec.Mapping, payload)
-    if err != nil {
-        // 映射失败是永久性错误，payload 不变重试结果相同，直接死信
-        p.logger.Error("build request failed", "error", err)
-        p.handleDeadLetter(ctx, task, msg, "build_request_error: "+err.Error())
-        return
-    }
+```
+processMessage(msg):
+  // 提取追踪 ID，贯穿整个处理链路的日志
+  traceId ← msg.headers["x-trace-id"]
 
-    // 5. HTTP 调用
-    start := time.Now()
-    resp, err := p.httpClient.Do(req)
-    duration := time.Since(start)
+  // Step 1: 从 DB 加载投递任务记录
+  deliveryTask ← 从 DB 查询投递任务(msg.body.delivery_task_id)
 
-    // 6. 响应判定
-    if err != nil {
-        // HTTP 连接失败是瞬态错误，走 DLX+TTL 重试
-        p.handleRetry(ctx, task, msg, "http_error: "+err.Error())
-        return
-    }
-    defer resp.Body.Close()
+  if 查询失败（DB 连接异常、超时等）:
+    // 瞬态错误，MQ 消息重新入队，等待下一次消费
+    msg.nack(requeue: true)
+    return
 
-    body, _ := io.ReadAll(resp.Body)
+  if 查询成功但记录不存在:
+    // 数据异常或消息异常，丢弃该消息（重试多少次都一样）
+    msg.ack()
+    记录错误日志("deliveryTask not found", msg.body.delivery_task_id)
+    return
 
-    // 优先取 DeliverySpec 级别判决（按 event_type 可选覆盖），没有则回退供应商级别
-    judgment := vendorCfg.Judgment
-    if deliverySpec.Judgment != nil {
-        judgment = *deliverySpec.Judgment
-    }
-    result := judgeResponse(judgment, resp.StatusCode, body)
+  // Step 2: 加载供应商配置和投递契约
+  vendorConfig  ← 获取供应商配置(deliveryTask.vendorId)
+  deliverySpec  ← 获取投递契约(deliveryTask.vendorId, deliveryTask.eventType)
 
-    // 输出结构化日志 (attempt 详情)
-    p.logAttempt(task, req, resp, body, duration, result)
+  // Step 3: 加载原始通知的 payload（映射引擎的输入）
+  payload ← 从 DB 查询通知 payload(deliveryTask.notificationId)
 
-    if result.Success {
-        p.db.UpdateDeliveryTaskStatus(ctx, task.ID, "SUCCEEDED")
-        msg.Ack(false)
-    } else if result.Retryable {
-        p.handleRetry(ctx, task, msg, result.ErrorMsg)
-    } else {
-        p.handleDeadLetter(ctx, task, msg, result.ErrorMsg)
-    }
-}
+  if 加载失败:
+    // 瞬态错误，重新入队
+    msg.nack(requeue: true)
+    return
+
+  // Step 4: 用映射引擎将 payload 拼装为对供应商的 HTTP 请求
+  // 内部使用 resolveNode / resolveField / resolveSourceDirective 等算法
+  httpRequest ← BuildRequest(vendorConfig, deliverySpec.mapping, payload)
+
+  if httpRequest 构造失败:
+    // 永久错误——payload 不变则重试结果相同，直接进死信
+    moveToDeadLetter(deliveryTask, "build_request_failed")
+    msg.ack()
+    return
+
+  // Step 5: 向供应商 API 发起 HTTP 请求
+  (httpResponse, duration) ← 发送 HTTP 请求(httpRequest)
+
+  // Step 5a: 处理未收到完整响应的情况
+  // 包括但不限于：DNS 解析失败、连接被拒、TLS 握手失败、TCP 中途断连、请求超时
+  // 凡是未收到完整 HTTP 响应的，都视为瞬态错误，走重试机制
+  if 网络连接失败:
+    handleRetry(deliveryTask, msg, "network_error")
+    return
+
+  // Step 6: 用判决规则判定响应
+  // MVP：使用简单 HTTP 状态码判定（200–299 → 成功，5xx/429 → 可重试，其他 → 不可重试进死信）
+  // 未来扩展：支持从 deliverySpec.judgment / vendorConfig.judgment 读取可配置规则
+  result ← judgeResponse(httpResponse.statusCode, httpResponse.body)
+
+  记录投递尝试日志(deliveryTask.id, httpRequest.url, httpResponse.statusCode, duration, result)
+
+  // Step 7: 根据判决结果分三种情况
+  if result == SUCCESS:
+    deliveryTask.status ← "SUCCEEDED"
+    更新 DB 投递任务状态(deliveryTask)
+    msg.ack()
+
+  else if result.retryable:
+    handleRetry(deliveryTask, msg, result.errorMessage)
+
+  else:
+    moveToDeadLetter(deliveryTask, result.errorMessage)
+    msg.ack()
 ```
 
 #### 5.4.3 重试与死信处理
 
-```go
-// handleRetry 处理可重试的失败（MVP：MQ DLX+TTL 延迟重投）
-// 必须先 publish 后 Ack，否则两者间服务崩溃则原始消息已确认、延迟消息未投出，重试丢失
-func (p *WorkerPool) handleRetry(ctx context.Context, task *DeliveryTask, msg amqp.Delivery, errMsg string) {
-    task.RetryCount++
-    nextDelay := calculateBackoff(task.RetryCount, &p.config.GetVendorConfig(task.VendorID).RetryPolicy)
+**handleRetry —— 重试逻辑**（伪码）：
 
-    // DB 更新重试计数
-    p.db.UpdateDeliveryTaskRetry(ctx, task.ID, task.RetryCount, time.Now().Add(nextDelay), errMsg)
+```
+handleRetry(task, msg, errorMsg):
+  // 被 processMessage 在响应结果 retryable == true 时调用
+  // 处理可重试的投递失败
+  // MVP 方案：利用 MQ 的 DLX+TTL 机制实现延迟重投
+  // 内部使用 calculateBackoff 计算等待时间
+  //
+  // 关键注意点——顺序不可颠倒：
+  //   先发布延迟消息到 DLX → 确认成功 → 再 ACK 原始消息
+  //   若反过来，服务在 ACK 后、publish 前崩溃，则重试丢失
 
-    if task.RetryCount < task.MaxRetries {
-        // 未超最大次数: 先发布延迟消息到 DLX，入队确认后再 ACK 原消息
-        p.publishDelayed(ctx, task.VendorID, task.ID, nextDelay)
-        msg.Ack(false)
-    } else {
-        // 超过最大次数: 先写入死信记录，再 ACK 原消息
-        p.moveToDeadLetter(ctx, task, errMsg)
-        msg.Ack(false)
-    }
-}
+  task.retryCount ← task.retryCount + 1
+  nextDelay ← calculateBackoff(task.retryCount, task.retryPolicy)
 
-// publishDelayed 向 DLX 发布延迟消息
-func (p *WorkerPool) publishDelayed(ctx context.Context, vendorID string, taskID string, delay time.Duration) {
-    body, _ := json.Marshal(DeliveryMessage{DeliveryTaskID: taskID})
-    msg := amqp.Publishing{
-        ContentType:  "application/json",
-        DeliveryMode: amqp.Persistent,
-        Headers: amqp.Table{
-            "x-original-routing-key": "delivery",
-        },
-        Expiration: strconv.FormatInt(int64(delay.Milliseconds()), 10), // TTL 毫秒
-        Body:       body,
-    }
-    // 发布到 DLX → RETRY_EX → RETRY_Q（等待 TTL 到期后死信回 DELIVERY_EX）
-    p.mq.Channel.Publish("notification.dlx", "", false, false, msg)
-}
+  // 更新 DB：记录重试计数和错误信息（实际延迟等待由 MQ TTL 控制）
+  更新投递任务 retry 信息(
+    id: task.id,
+    retryCount: task.retryCount,
+    lastError: errorMsg
+  )
 
-// calculateBackoff 指数退避 + 随机抖动
-// Full Jitter 算法: delay = min(base * multiplier^attempt, max)
-//                      actual = delay * (1 - jitter * random())
-func calculateBackoff(attempt int, policy *RetryPolicy) time.Duration {
-    delay := float64(policy.BaseDelay) * math.Pow(policy.Multiplier, float64(attempt))
-    delay = math.Min(delay, float64(policy.MaxDelay))
+  if task.retryCount < task.maxRetries:
+    // 有重试次数余量 → 向 notification.retry 投递延迟消息
+    // 按 nextDelay 向上取整匹配时间槽，选择对应 routing key
+    // 各延迟队列声明固定 x-message-ttl，到期后自动死信回投递队列重新消费
+    publishDelayed(task.id, nextDelay)
+    msg.ack()   // 原消息已确认，新消息在对应的 retry 队列中等待 TTL 到期
 
-    if policy.Jitter > 0 {
-        jitter := policy.Jitter * rand.Float64()
-        delay = delay * (1 - jitter)
-    }
+  else:
+    // 重试次数耗尽 → 写入死信表，不再投递
+    moveToDeadLetter(task, errorMsg)
+    msg.ack()
+```
 
-    return time.Duration(delay)
-}
+**publishDelayed —— 延迟消息发布**（伪码）：
+
+```
+publishDelayed(taskId, delay):
+  // 被 handleRetry 在有重试余量时调用
+  // delay 由 calculateBackoff 算出
+  // 按 delay 向上取整匹配最近的时间槽，选择对应 routing key 发布
+  // 各延迟队列声明固定 x-message-ttl，到期后自动死信回投递队列重新消费
+  //
+  //   RETRY_EX → (按 routing key 路由) → RETRY_{slot}S_Q
+  //                                            ↓ x-message-ttl 到期
+  //   DELIVERY_EX ← 死信回投 ←
+  //       ↓
+  //   DELIVERY_Q → Worker 重新消费
+
+  routingKey ← selectTimeSlot(delay, retrySlots)
+  // retrySlots 是运行时配置，定义由几个时间槽及各自的 TTL、routing key
+  // selectTimeSlot 将 delay 向上取整匹配最近的时间槽：
+  //   示例配置：[{key:"retry.2s", ttl:2000}, {key:"retry.5s", ttl:5000}, ...]
+  //   delay=800ms  → 2s 槽 → "retry.2s"
+  //   delay=3s     → 5s 槽 → "retry.5s"
+  //   delay=8s     → 10s 槽 → "retry.10s"
+
+  msg ← 构造 MQ 消息(
+    body: { "delivery_task_id": taskId },
+    persistent: true
+  )
+
+  发布到 exchange("notification.retry"), routingKey: routingKey
+```
+
+**calculateBackoff —— 指数退避**（伪码）：
+
+```
+calculateBackoff(attempt, policy):
+  // 被 handleRetry 调用
+  // 使用 Full Jitter 算法计算重试等待时间
+  // 目的：避免所有 Worker 在同一时刻同时重试（踩踏效应）
+  //
+  // 参数 attempt: 当前是第几次重试（第 0 次 = 首次失败）
+  // 参数 policy: { baseDelay, multiplier, maxDelay, jitter }
+  //
+  // 算法：
+  //   delay ← base × multiplier^attempt
+  //   delay ← min(delay, maxDelay)
+  //   delay ← delay × (1 - jitter × random[0,1))
+  //
+  // 例：base=10s, multiplier=2, maxDelay=300s, jitter=0.2
+  //   attempt=0 → 10s × (1 - 0~20%)      ≈ 8~10s
+  //   attempt=2 → 40s × (1 - 0~20%)      ≈ 32~40s
+  //   attempt=6 → min(640s, 300s) × 抖动  ≈ 240~300s
+
+  delay ← policy.baseDelay × (policy.multiplier ^ attempt)
+  delay ← min(delay, policy.maxDelay)
+
+  if policy.jitter > 0:
+    reduction ← policy.jitter × randomFloat(0, 1)
+    delay ← delay × (1 - reduction)
+
+  return delay
 ```
 
 <a id="55-限流器"></a>
@@ -1541,7 +1557,7 @@ func calculateBackoff(attempt int, policy *RetryPolicy) time.Duration {
 <a id="6-mq-拓扑设计"></a>
 ## 6. MQ 拓扑设计
 
-> **MVP 范围**：使用共享投递队列（全供应商统一），不按供应商分区。重试通过 MQ DLX+TTL 机制实现延迟重投。
+> **MVP 范围**：使用共享投递队列（全供应商统一），不按供应商分区。重试通过 MQ 队列级 TTL 机制实现延迟重投。
 >
 > **未来扩展**：第二阶段引入按供应商分区队列，见 HLD §4.2。
 
@@ -1553,14 +1569,13 @@ flowchart TB
     subgraph EX["Exchange 层"]
         TRIGGER_EX["notification.trigger<br/>(direct)"]
         DELIVERY_EX["notification.delivery<br/>(direct)"]
-        DLX_EX["notification.dlx<br/>(fanout)"]
         RETRY_EX["notification.retry<br/>(direct)"]
     end
 
     subgraph Q["Queue 层"]
         TRIGGER_Q["notification.trigger.queue"]
         DELIVERY_Q["notification.delivery.queue<br/>(共享，全供应商统一)"]
-        RETRY_Q["notification.retry.queue"]
+        RETRY_QS["notification.retry.*.queue<br/>(多个队列，按延迟时间命名)"]
     end
 
     GW[接收网关] -->|PUBLISH| TRIGGER_EX
@@ -1571,11 +1586,9 @@ flowchart TB
     DELIVERY_EX --> DELIVERY_Q
     DELIVERY_Q --> WP[共享 Worker 池]
 
-    WP -->|可重试失败| DLX_EX
-    DLX_EX --> RETRY_EX
-    RETRY_EX --> RETRY_Q
-    RETRY_Q -->|TTL 到期后死信回| DELIVERY_EX
-    DELIVERY_EX --> DELIVERY_Q
+    WP -->|可重试失败<br/>PUBLISH 按路由键选择延迟队列| RETRY_EX
+    RETRY_EX -->|retry.2s / retry.5s / ...| RETRY_QS
+    RETRY_QS -->|TTL 到期死信回| DELIVERY_EX
 ```
 
 <a id="62-触发通道"></a>
@@ -1590,14 +1603,13 @@ flowchart TB
 | 持久化 | 消息 `delivery_mode=2`（持久化），队列 `durable=true` |
 | 消费语义 | at-least-once，手动 ACK |
 
-**声明方式**（Go 中使用 amqp091-go 声明）：
+**声明拓扑**：
 
-```go
-// 触发通道
-ch.ExchangeDeclare("notification.trigger", "direct", true, false, false, false, nil)
-ch.QueueDeclare("notification.trigger.queue", true, false, false, false, nil)
-ch.QueueBind("notification.trigger.queue", "trigger", "notification.trigger", false, nil)
-```
+| 元素 | 类型 | 属性 |
+|------|------|------|
+| Exchange | `notification.trigger` | direct, durable |
+| Queue | `notification.trigger.queue` | durable |
+| Binding | `notification.trigger.queue` ↔ `notification.trigger` | routing_key = `trigger` |
 
 <a id="63-投递队列"></a>
 ### 6.3 投递队列（MVP 共享队列）
@@ -1610,54 +1622,52 @@ ch.QueueBind("notification.trigger.queue", "trigger", "notification.trigger", fa
 | 持久化 | 消息持久化，队列 durable=true |
 | 消费 Qos | 每个 Worker `prefetch_count=1` |
 
-**声明方式**：
+**声明拓扑**：
 
-```go
-// 投递通道（共享队列）
-ch.ExchangeDeclare("notification.delivery", "direct", true, false, false, false, nil)
-ch.QueueDeclare("notification.delivery.queue", true, false, false, false, nil)
-ch.QueueBind("notification.delivery.queue", "delivery", "notification.delivery", false, nil)
-```
+| 元素 | 类型 | 属性 |
+|------|------|------|
+| Exchange | `notification.delivery` | direct, durable |
+| Queue | `notification.delivery.queue` | durable |
+| Binding | `notification.delivery.queue` ↔ `notification.delivery` | routing_key = `delivery` |
 
 <a id="64-延迟重试通道"></a>
-### 6.4 延迟重试通道（MVP：DLX+TTL）
+### 6.4 延迟重试通道（MVP：队列级 TTL）
 
-采用 **DLX + TTL** 方案（无需额外插件），Worker 在投递失败时可重试时，将消息发布到 DLX，经过 RETRY_EX→RETRY_Q 等待 TTL 到期后，死信回 DELIVERY_EX 重新投递：
+采用**预定义时间槽 + 队列级 TTL** 方案。Worker 在投递失败可重试时，按 backoff 计算结果向上取整到最近的时间槽，将消息发布到 `notification.retry` exchange 并选择对应 routing key。各延迟队列在声明时固定 `x-message-ttl`，TTL 到期后消息自动死信回 `notification.delivery` exchange：
 
 ```mermaid
 flowchart LR
-    DELIVERY_Q[投递队列<br/>notification.delivery.queue] -->|消费失败 可重试| DLX_EX
-    DLX_EX -->|fanout| RETRY_EX
-    RETRY_EX -->|消息带有 expiration| RETRY_Q
-    RETRY_Q -->|到期后死信回| DELIVERY_EX
-    DELIVERY_EX -->|重新消费| DELIVERY_Q
-
-    subgraph "DLX + TTL 机制"
-        A[Worker 将消息发布到 DLX<br/>并设置 expiration=next_delay_ms]
-        B[DLX → RETRY_EX → RETRY_Q]
-        C[消息在 RETRY_Q 中等待 TTL 过期]
-        D[TTL 过期 → 死信回 DELIVERY_EX]
-        E[DELIVERY_EX → 投递队列<br/>重新消费]
-        A --> B --> C --> D --> E
-    end
+    WP[Worker Pool] -->|"PUBLISH routing_key=retry.5s"| RETRY_EX["notification.retry (direct)"]
+    RETRY_EX -->|"retry.2s"| Q2["notification.retry.2s.queue<br/>(x-message-ttl=2000)"]
+    RETRY_EX -->|"retry.5s"| Q5["notification.retry.5s.queue<br/>(x-message-ttl=5000)"]
+    RETRY_EX -->|"retry.10s"| Q10["notification.retry.10s.queue<br/>(x-message-ttl=10000)"]
+    RETRY_EX -->|"retry.30s"| Q30["notification.retry.30s.queue<br/>(x-message-ttl=30000)"]
+    Q2 -->|死信| DELIVERY_EX["notification.delivery"]
+    Q5 -->|死信| DELIVERY_EX
+    Q10 -->|死信| DELIVERY_EX
+    Q30 -->|死信| DELIVERY_EX
+    DELIVERY_EX -->|"# 通配"| DELIVERY_Q["notification.delivery.queue<br/>重新消费"]
 ```
 
-**声明配置**：
+**时间槽定义**（运行时配置，按需增删。以下为示例值）：
 
-```go
-// 延迟重试队列声明
-ch.ExchangeDeclare("notification.dlx", "fanout", true, false, false, false, nil)
-ch.ExchangeDeclare("notification.retry", "direct", true, false, false, false, nil)
+| 时间槽 | routing key | Queue | TTL |
+|--------|-------------|-------|-----|
+| 2s | `retry.2s` | `notification.retry.2s.queue` | 2000ms |
+| 5s | `retry.5s` | `notification.retry.5s.queue` | 5000ms |
+| 10s | `retry.10s` | `notification.retry.10s.queue` | 10000ms |
+| 30s | `retry.30s` | `notification.retry.30s.queue` | 30000ms |
 
-// RETRY_Q: 消息在此等待 TTL 到期
-// x-dead-letter-exchange = notification.delivery（到期后重回投递交换机）
-args := amqp.Table{
-    "x-dead-letter-exchange":    "notification.delivery",
-    "x-message-ttl":             0,      // TTL 由每条消息的 expiration 决定
-}
-ch.QueueDeclare("notification.retry.queue", true, false, false, false, args)
-ch.QueueBind("notification.retry.queue", "retry", "notification.retry", false, nil)
-```
+**声明拓扑**：
+
+| 元素 | 类型 | 属性 |
+|------|------|------|
+| Exchange | `notification.retry` | direct, durable |
+| Queue | `notification.retry.2s.queue` | durable, `x-message-ttl=2000`, `x-dead-letter-exchange = notification.delivery` |
+| Queue | `notification.retry.5s.queue` | durable, `x-message-ttl=5000`, `x-dead-letter-exchange = notification.delivery` |
+| Queue | `notification.retry.10s.queue` | durable, `x-message-ttl=10000`, `x-dead-letter-exchange = notification.delivery` |
+| Queue | `notification.retry.30s.queue` | durable, `x-message-ttl=30000`, `x-dead-letter-exchange = notification.delivery` |
+| Binding | 各 queue ↔ `notification.retry` | routing_key 等于队列对应的时间槽 key（如 `retry.2s`）|
 
 <a id="65-消息格式规范"></a>
 ### 6.5 消息格式规范
@@ -1682,7 +1692,6 @@ ch.QueueBind("notification.retry.queue", "retry", "notification.retry", false, n
 |--------|------|------|------|
 | `x-trace-id` | string | 追踪 ID，接收层生成，沿链路传播 | 是 |
 | `x-retry-count` | int | 已重试次数（延迟重试时设置） | 否 |
-| `x-original-routing-key` | string | 原始路由键（延迟消息使用） | 延迟消息必填 |
 
 ---
 
@@ -1846,65 +1855,59 @@ config/                     # 示例配置文件目录
 
 #### 9.3.1 ConfigLoader（MVP：本地文件加载）
 
-```go
-// DeliverySpec 描述 "将一条通知投递给一个供应商" 的完整规格。
-// 包括输入侧映射（payload → request）和输出侧判决（response 判定）。
-// Judgment 非 nil 时覆盖 VendorConfig.ResponseJudgment。
-type DeliverySpec struct {
-    Mapping  MappingConfig     // payload → request 映射
-    Judgment *ResponseJudgment // 可选，覆盖供应商级别默认判决
-    // Sign  *SignConfig       // 未来：签名逻辑
-}
+**DeliverySpec —— 投递契约**：
 
-type ConfigLoader struct {
-    configDir string                // 配置文件目录（config/）
-    mu        sync.RWMutex
-    current   *RuntimeConfig        // 当前生效快照
-}
+```mermaid
+classDiagram
+    class DeliverySpec {
+        +MappingConfig mapping
+        +ResponseJudgment judgment  // 可选，覆盖供应商级别默认判决
+        // +SignConfig sign       // 未来：签名逻辑
+    }
+    note "DeliverySpec 描述 '将一条通知投递给一个供应商' 的完整契约。\n包括输入侧映射 (payload → request) 和输出侧判决 (response 判定)"
 
-func (l *ConfigLoader) Load(ctx context.Context) error              // 加载全量配置（读本地文件）
-func (l *ConfigLoader) GetVendor(vendorID string) *VendorConfig
-func (l *ConfigLoader) GetDeliverySpec(vendorID, eventType string) *DeliverySpec
-func (l *ConfigLoader) GetRoutingRules(eventType string) []RoutingRule
+    class ConfigLoader {
+        -String configDir
+        -RuntimeConfig current  // 当前生效快照
+        +Load()                     // 加载全量配置（读本地文件）
+        +GetVendor(vendorId) VendorConfig
+        +GetDeliverySpec(vendorId, eventType) DeliverySpec
+        +GetRoutingRules(eventType) RoutingRule[]
+    }
 ```
 
 #### 9.3.2 WorkerPool（MVP：共享池）
 
-```go
-type WorkerPool struct {
-    Concurrency int           // Worker 并发数
-
-    cancel context.CancelFunc
-    wg     sync.WaitGroup
-}
-
-func NewWorkerPool(concurrency int, deps *WorkerDeps) *WorkerPool
-func (p *WorkerPool) Start(ctx context.Context)
-func (p *WorkerPool) Stop(ctx context.Context) error     // 优雅退出
+```mermaid
+classDiagram
+    class WorkerPool {
+        +Int concurrency
+        +Start(ctx)
+        +Stop(ctx)                  // 优雅退出
+    }
 ```
 
 #### 9.3.3 DB 访问接口（MVP）
 
-```go
-type DBClient interface {
-    // 通知操作
-    UpsertNotification(ctx context.Context, p UpsertParams) (notificationID string, isNew bool, err error)
-    GetNotification(ctx context.Context, id string) (*Notification, error)
-    GetNotificationPayload(ctx context.Context, id string) (map[string]any, error)
-    UpdateNotificationStatus(ctx context.Context, id, status string) error
-    GetEventSchema(ctx context.Context, eventType string) ([]byte, error)
+**DBClient 接口定义**：
 
-    // 投递任务操作
-    CreateDeliveryTasks(ctx context.Context, notificationID string, vendorIDs []string) ([]*DeliveryTask, error)
-    GetDeliveryTask(ctx context.Context, id string) (*DeliveryTask, error)
-    UpdateDeliveryTaskStatus(ctx context.Context, id, status string) error
-    UpdateDeliveryTaskRetry(ctx context.Context, id string, retryCount int, nextRetryAt time.Time, lastErr string) error
-
-    // 死信操作
-    InsertDeadLetter(ctx context.Context, task *DeliveryTask, errMsg string) error
-    GetDeadLetterRecords(ctx context.Context, filter DeadLetterFilter) ([]*DeadLetterRecord, error)
-    RetryDeadLetter(ctx context.Context, id string) error
-}
+```mermaid
+classDiagram
+    class DBClient {
+        <<interface>>
+        +UpsertNotification(params) (notificationId, isNew)
+        +GetNotification(id) Notification
+        +GetNotificationPayload(id) Payload
+        +UpdateNotificationStatus(id, status)
+        +GetEventSchema(eventType) Schema
+        +CreateDeliveryTasks(notificationId, vendorIds) DeliveryTask[]
+        +GetDeliveryTask(id) DeliveryTask
+        +UpdateDeliveryTaskStatus(id, status)
+        +UpdateDeliveryTaskRetry(id, retryCount, lastErr)
+        +InsertDeadLetter(task, errMsg)
+        +GetDeadLetterRecords(filter) DeadLetterRecord[]
+        +RetryDeadLetter(id)
+    }
 ```
 
 <a id="94-配置加载与启动流程"></a>
@@ -1932,56 +1935,64 @@ sequenceDiagram
     Note over GW,R: 服务就绪，开始处理请求
 ```
 
-**main.go 启动流程（MVP）**：
+**main 启动流程（MVP 伪码）**：
 
-```go
-func main() {
-    ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-    defer cancel()
+```
+main():
+  // 注册系统信号监听：收到 SIGTERM 或 SIGINT 时触发关闭流程
+  注册信号监听(SIGTERM, SIGINT)
 
-    // 1. 初始化依赖
-    db := initDB(ctx)
-    mq := initMQ(ctx)
-    logger := initLogger()
+  // Step 1: 初始化基础设施——数据库连接、消息队列连接、日志系统
+  db  ← 建立 PostgreSQL 连接
+  mq  ← 建立 RabbitMQ 连接
+  logger ← 初始化结构化日志系统
 
-    // 2. 配置加载（本地文件）
-    configLoader := config.NewLoader("config", logger)
-    if err := configLoader.Load(ctx); err != nil {
-        logger.Fatal().Err(err).Msg("failed to load config")
+  // Step 2: 从本地 config/ 目录加载全量配置
+  // 配置包括：供应商接入信息、事件 Schema、路由规则、映射规则
+  configLoader ← 创建配置加载器(configDir: "config")
+  success ← configLoader.Load()
+  if not success:
+    logger.Fatal("加载配置文件失败，终止启动")
+
+  // Step 3: 构造接收层——通知提交通道的同步入口
+  ingestionSvc     ← 创建 IngestionService(configLoader, db, mq, logger)
+  ingestionHandler ← 创建 HTTP Handler(ingestionSvc)
+
+  // Step 4: 在后台异步启动路由分发器
+  router ← 创建 Dispatcher(configLoader, db, mq, logger)
+  spawn router.Start(ctx)
+
+  // Step 5: 在后台异步启动 Worker 池（共享池，并发数 = 10）
+  workerPool ← 创建 WorkerPool(
+    concurrency: 10, configLoader, db, mq, logger
+  )
+  spawn workerPool.Start(ctx)
+
+  // Step 6: 在后台异步启动 HTTP 服务，监听 8080 端口
+  httpServer ← 创建 HTTP 服务器(
+    addr: ":8080",
+    routes: {
+      POST /api/v1/notifications           → ingestionHandler.Submit
+      GET  /api/v1/notifications/{id}      → ingestionHandler.GetNotification
     }
+  )
+  spawn httpServer.ListenAndServe()
 
-    // 3. 接收层
-    ingestionSvc := ingestion.NewService(configLoader, db, mq, logger)
-    ingestionHandler := handler.NewIngestionHandler(ingestionSvc, logger)
+  // Step 7: 主协程在此阻塞等待退出信号
+  waitSignal()
+  logger.Info("收到退出信号，开始优雅关闭……")
 
-    // 4. 路由分发器
-    router := routing.NewDispatcher(configLoader, db, mq, logger)
-    go router.Start(ctx)
+  // Step 8: 并发关闭 HTTP 和 Worker
+  // 两者关闭期间 MQ、DB 保持可用——正在处理的请求还需要写 DB 和发 MQ
+  shutdownCtx ← 带超时的上下文(30s)
+  并发执行:
+    httpServer.Shutdown(shutdownCtx)  // 停止接收新请求，等待已到达的完成
+    workerPool.Stop(shutdownCtx)      // 停止消费新 MQ 消息，等待当前投递完成
+  等待所有关闭完成（或超时）
 
-    // 5. 投递 Worker 池（共享池，所有供应商共用）
-    workerPool := delivery.NewWorkerPool(10, configLoader, db, mq, logger)
-    go workerPool.Start(ctx)
-
-    // 6. HTTP 服务
-    mux := chi.NewRouter()
-    mux.Use(middleware.Logger(logger))
-    mux.Post("/api/v1/notifications", ingestionHandler.Submit)
-    mux.Get("/api/v1/notifications/{id}", ingestionHandler.GetNotification)
-
-    httpServer := &http.Server{Addr: ":8080", Handler: mux}
-    go httpServer.ListenAndServe()
-
-    // 7. 等待退出信号
-    <-ctx.Done()
-    logger.Info().Msg("shutting down...")
-
-    // 8. 优雅退出
-    shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-    defer shutdownCancel()
-
-    workerPool.Stop(shutdownCtx)
-    httpServer.Shutdown(shutdownCtx)
-}
+  // Step 9: 两路均完成后，关闭底层连接
+  mq.Close()
+  db.Close()
 ```
 
 <a id="95-优雅关闭"></a>
@@ -1999,14 +2010,18 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     OS->>Main: SIGTERM
-    Main->>HTTP: Shutdown()
-    Note over HTTP: 停止接收新请求<br/>等待进行中的请求完成(≤10s)
-    HTTP-->>Main: Done
 
-    Main->>WP: Stop()
-    Note over WP: 停止消费新消息<br/>等待当前投递完成(≤30s)
-    WP->>MQ: 手动 ACK 已完成的消息
-    WP-->>Main: Done
+    par 并发执行两路独立关闭
+        Main->>HTTP: Shutdown()
+        Note over HTTP: 停止接收新请求<br/>等待进行中的请求完成(≤10s)<br/>此时 MQ、DB 仍可用
+        HTTP-->>Main: Done
+    and
+        Main->>WP: Stop()
+        Note over WP: 停止消费新消息<br/>等待当前投递完成(≤30s)<br/>此时 DB 仍可用
+        WP-->>Main: Done
+    end
+
+    Note over Main: 两路均完成，无活跃请求/投递
 
     Main->>MQ: Close()
     Main->>DB: Close()
@@ -2014,10 +2029,11 @@ sequenceDiagram
 ```
 
 **关闭前保证**：
-1. HTTP 服务停止接收新请求，进行中的请求正常完成后关闭
-2. Worker 停止消费新 MQ 消息，当前正在处理的 HTTP 投递正常完成后关闭
-3. 未 ACK 的消息在连接断开后自动重新入队，重启后继续处理
-4. 关闭超时（默认 30s）后强制退出，未完成的消息由 MQ 自动重投
+1. HTTP 服务关闭期间 MQ、DB 连接保持可用——正在处理的请求仍需向 MQ 发送通知和写入 DB
+2. Worker 池关闭期间 DB 连接保持可用——正在投递的 Worker 仍需更新 delivery_tasks 状态
+3. 未 ACK 的 MQ 消息在连接断开后自动重新入队，重启后继续处理
+4. HTTP 和 Worker 均关闭后才关闭 MQ、DB 连接
+5. 关闭超时（默认 30s）后强制退出，未完成的消息由 MQ 自动重投
 
 ---
 
@@ -2046,9 +2062,18 @@ sequenceDiagram
 <a id="102-e2e-验收测试"></a>
 ### 10.2 E2E 验收测试
 
-**测试对象**：完整系统（HTTP → IngestionService → DB → MQ → Router → MQ → Worker → Vendor 外部调用）。
+**测试对象**：完整系统黑盒。以编译产物的二进制文件启动一个真实的通知系统实例（使用真实的 PostgreSQL 和 RabbitMQ）。测试脚本将通知系统视为黑盒，不直接访问其内部组件（DB、MQ），只通过与真实业务系统一致的 HTTP 接口交互。最终验证通知系统发往 Mock Vendor 的 HTTP 请求是否符合预期。
 
-**启动方式**：通过 testcontainers 启动 PostgreSQL 和 RabbitMQ 真实实例，在进程中拉起完整 HTTP 服务，通过真实 HTTP 客户端发送请求，断言最终结果（DB 记录状态、Vendor 是否收到调用）。
+**启动方式**：
+1. 编译二进制产物
+2. 通过 testcontainers 或外部服务启动 PostgreSQL 和 RabbitMQ
+3. 以二进制文件启动通知系统实例
+4. 测试脚本通过 HTTP 提交通知
+5. 系统异步投递完成后，测试脚本查询 Mock Vendor 的请求记录进行断言
+
+**Mock Vendor**：一个轻量级 HTTP Server，作为测试环境中的"虚拟供应商 API"。提供响应预配置、请求记录、延迟注入、错误注入等能力（详见 HLD §7.8.2）。
+
+**测试 ID 串联**：每轮测试生成唯一 test_case_id，作为 payload 字段提交通知，经映射规则拼入发往供应商的请求 Header（X-Test-Id）。Mock Vendor 据此识别用例、记录请求、模拟响应。测试脚本通过 test_case_id 查询请求记录并断言。
 
 **目的**：定义功能的合格线。每条 E2E 测试通过，代表一个场景在完整链路上可用。它是开发流程的锁定信号——在外循环看到它变绿之前，功能不算完成。
 
@@ -2091,7 +2116,7 @@ sequenceDiagram
 <a id="105-算法测试"></a>
 ### 10.5 算法测试
 
-**测试对象**：不依赖任何外部系统的纯函数（`calculateBackoff`、`judgeResponse`、`resolveString` 等）。
+**测试对象**：不依赖任何外部系统的纯函数（`calculateBackoff`、`resolveField` 等）。
 
 **启动方式**：标准 `go test`，无任何外部依赖。直接调用函数，断言返回值。
 
@@ -2104,7 +2129,7 @@ sequenceDiagram
 
 **测试对象**：SIGTERM 信号处理 + Worker 完成当前任务后才退出的机制。
 
-**启动方式**：同 E2E（启动完整真实系统），在 Worker 处理中途发送 SIGTERM，观察是否在完成当前请求后退出，且 MQ 消息不丢失。
+**启动方式**：同 E2E 验收测试（编译二进制 → 启动完整真实系统），在 Worker 处理中途发送 SIGTERM，观察是否在完成当前请求后退出，且 MQ 消息不丢失。
 
 **目的**：验证系统生命周期事件的正确处理。这是一个特殊的 E2E 场景——共享相同的基础设施，但测试的是"终结阶段"的行为而非"运行阶段"的行为。
 
@@ -2144,7 +2169,7 @@ graph TD
 | 算法测试 | git push | 每次提交 | < 1s |
 | 编排测试 | git push | 每次提交 | < 5s |
 | 契约测试 | git push | 每次提交 | 10~30s |
-| E2E 验收测试 | PR 合并前 / nightly | 按需 | 10~60s |
+| E2E 验收测试 | PR 合并前 / nightly | 按需 | 30~120s |
 | 优雅关闭验证 | nightly | 每日 | 10~60s |
 
 算法测试和编排测试作为 PR 门禁，契约测试并行执行，E2E 和优雅关闭验证作为 pre-merge 或 nightly 的独立 stage。
@@ -2160,6 +2185,7 @@ graph TD
 | §2 数据模型 | §2 核心实体模型, §4.1.2 存储模型 | 实现级表结构 |
 | §3 API | §5.1 接收网关 | RESTful JSON API 完整定义（MVP 简化版） |
 | §4 配置 | §3.5 配置架构, §4.4 配置存储 | 完整 YAML 文件格式（MVP 本地文件） |
+| §5.0 整体架构与组件图 | §3.1 模块分层图, §5 | 组件依赖图 + Port 接口定位（新增） |
 | §5.1 接收网关 | §5.1 接收网关 | 幂等处理逻辑（MVP 无鉴权） |
 | §5.2 路由分发器 | §5.2 路由分发器 | 事件→供应商映射（MVP 无条件路由） |
 | §5.3 请求拼装 | §5.3 请求拼装 | 结构化映射引擎 |
@@ -2170,3 +2196,42 @@ graph TD
 | §8 可观测性 | 未展开(HLD 提及) | MVP 仅结构化日志 |
 | §9 实现指南 | 未展开 | MVP 包结构/接口/启动流程 |
 | §10 测试策略 | 未展开 | Outside-In TDD 测试分层架构 |
+
+---
+
+## 附录 B: 评审记录
+
+### B.1 详细设计文档应该用 UML 图 / 伪码还是具体语言的代码示例？（2026-06-03）
+
+**问题**：详细设计文档中，组件内部逻辑、算法流程用 Go 代码表示好，还是用语言无关的 UML 图或伪码表示好？
+
+**关注点**：
+- **Go 代码示例的读者门槛**：原文档在 §5 组件内部设计中大量使用了 Go 代码示例（Submit 函数、Route 函数、resolveString 等）。读者需要先理解 Go 语法才能理解设计意图——这为使用 Java、Python 等其他语言的开发者设置了不必要的障碍。对于"路由分发器的处理流程"这类通用逻辑场景，Go 的语法细节（`context.Context`、`time.Duration`、`type switch`）属于实现层面，而非设计层面，不应该出现在详细设计中。
+
+- **UML 图能否清晰表达逻辑**：部分流程（如 Route 的幂等检查、守卫条件和多路分支）用活动图表达确实比线性伪码更直观——一眼能看出"哪些路径会终止、哪些能继续"。另一部分流程（如 resolveNode 的类型分派）用活动图的菱形分支也很自然，省去了在伪码里写 `switch typeOf(node)` 的负担。但有些逻辑不适合用图表示：`calculateBackoff` 这种数学公式适合公式本身；`getNestedField` 这种递归遍历适合伪码；`resolveString` 的字符串替换是"每处引用逐次替换"的循环，活动图画出来反而比一行伪码更费解。
+
+- **语言无关的收益与成本**：用伪码取代 Go 代码时面临一个矛盾——伪码过于自然语言则缺乏精确性（实现者可能有歧义），过于精确则退化为"换了语法糖的代码"。折中方案是：对有明确算法步骤的逻辑用精确伪码（`delay ← base × mult^attempt；delay ← min(delay, maxDelay)`），对简单顺序管线和守卫条件用自然语言描述（"查询成功但记录不存在 → 日志警告，本消息不再重试"）。关键是从"描述代码怎么写"转变为"描述逻辑怎么走"。
+
+- **如何保证关联性**：去掉 Go 后，各算法之间的调用关系容易丢失（"resolveSourceDirective 被谁调用了？它在哪用？"）。解决方式是在每段伪码开头标注被谁调用、内部依赖谁，同时在 §5.3 开头增加一张算法依赖关系图，读者先看全景再读细节。
+
+**哲学**：详细设计文档同时面向"理解设计逻辑"的人和"实现当前模块"的人。即使是后者，文档要传达的也是"逻辑怎么走"而不是"代码怎么写"——否则不如直接写代码本身。语言无关的表示（UML 图 + 伪码）比具体语言的代码更准确地传达了设计意图。精确性与可读性的平衡点在于：逻辑复杂处给精确伪码，逻辑简单处给自然语言描述。
+
+**结论**：将所有 Go 代码替换为 UML 图（活动图、序列图、类图）和语言无关的伪码。在 §5.3 开头增加算法依赖关系图，在每段伪码开头标注调用关系以避免上下文断裂。
+
+### B.2 映射引擎中 resolveString 和 resolveField 的关系应该如何划分？（2026-06-03）
+
+**问题**：映射引擎（§5.3）各算法之间的职责边界和调用关系应该如何设计？具体涉及：`resolveString` 和 `resolveField` 是否重复；`resolveSourceDirective` 和 `resolveEachDirective` 是独立入口还是包含关系；`resolveNode` 的数据上下文参数应该是什么形式。
+
+**关注点**：
+- **resolveString 和 resolveField 是否存在职责重叠**（去重）：两者解析 `@{}` 引用、提取值的逻辑完全一致，差别仅在最后一步——`resolveString` 强制把结果转为字符串，`resolveField` 在纯引用场景下保留原始类型。这意味着 `resolveString` 等价于 `resolveField` 后再做一次 `toString()`。既然如此，取值逻辑只需封装在 `resolveField` 中，`resolveString` 只剩下一个"取完值再转字符串"的壳。但问题在于设计上保留了这个壳，调用者就需要在两者间"根据场景凭经验选择"——URL/Header 解析用 `resolveString`，`$source` 提取用 `resolveField`。这种隐式约定不该出现在设计中，应去掉 `resolveString`，所有场景统一使用 `resolveField`。
+
+- **resolveSourceDirective 和 resolveEachDirective 为什么不能是独立入口**（设计语义与代码结构的一致性）：设计上 `$source` 的语义是"对这个数据要做特殊处理了"，然后才根据其他键决定具体做什么处理（单值提取 + `$type`/`$format`，或 `$each` 数组遍历）。因此代码结构应该以 `$source` 为统一入口，内部按 `$each` 等键分派具体策略。原始设计在 `resolveNode` 中分别判断 `$each` 和 `$source` 键分派给两个独立算法，导致代码的控制流和设计语义打架——读者脑子里同时有两套逻辑在冲突：一套是实现的调度分支，一套是业务的 `$source` 入口语义。保证两者一致性，是在正确性之上更应保证的——不一致的代码，即使正确，也难以推导和验证。
+
+- **数据上下文应该怎么设计以防止命名冲突**（命名空间隔离）：`$each` 遍历时需要同时暴露原始 payload 和当前数组元素给 `resolveField`。原始设计通过深拷贝后再 merge `item` 键实现，但 payload 本身也可能含有名为 `item` 的字段——merge 后 `@{payload:item}` 指向了数组元素而非原始值。虽然实践中 payload 中名为 `item` 的字段极少，但设计上这是个隐患。改进为 `ctx = {payload: 原始通知}` 的统一数据容器，`@{xxx.yyy}` 即 `ctx[xxx][yyy]`。`$each` 内扩展为 `{...ctx, item: 当前元素}`，payload 和 item 通过键名隔离。这种设计还能低成本支持未来扩展，如 `@{global.env}`。
+
+**哲学**：
+- 职责有重叠的两个算法，如果其中一个在特定参数下可完全退化为另一个的行为，则应该合并。让调用者根据场景"凭经验隐式选择"是设计不干净的表现。
+- 代码的结构应该反映设计的语义，而非与之打架。如果设计上某个概念是入口，代码中就应以此概念为入口分派，否则读者需要在两套逻辑中反复切换才能验证代码的正确性。
+- 数据源应通过独立键名隔离，而非 merge 共享同一命名空间。这样做不仅能避免键名冲突，也为未来扩展新数据源提供了零改动的接口。
+
+**结论**：去掉 `resolveString`，`resolveField` 成为唯一的 `@{}` 引用替换入口。`resolveSourceDirective` 作为 `$source` 的统一入口，内部判断是否含 `$each` 后分派数组遍历或单值处理。`resolveNode` 的第二个参数改为 `ctx = {payload: 原始数据}`，`$each` 遍历时扩展为 `{...ctx, item: 当前元素}`。整体算法从 7 个精简为 5 个，调用关系从 12 条边简化为 8 条边。

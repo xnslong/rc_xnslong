@@ -34,3 +34,4 @@ settings.local.json
 
 # Build output
 output/
+.claude

@@ -88,6 +88,12 @@ func (m *mockDB) GetDeliveryTasksByNotificationID(ctx context.Context, notificat
 	return tasks, args.Error(1)
 }
 
+func (m *mockDB) ListNotifications(ctx context.Context, callerID, event string, page, pageSize int) ([]*model.Notification, int, error) {
+	args := m.Called(ctx, callerID, event, page, pageSize)
+	notifs, _ := args.Get(0).([]*model.Notification)
+	return notifs, args.Int(1), args.Error(2)
+}
+
 type mockMQ struct {
 	mock.Mock
 }
@@ -127,6 +133,12 @@ func (m *mockConfig) GetRoutingRules(eventType string) []port.RoutingRule {
 	args := m.Called(eventType)
 	rules, _ := args.Get(0).([]port.RoutingRule)
 	return rules
+}
+
+func (m *mockConfig) GetEventSchema(eventType string) ([]byte, bool) {
+	args := m.Called(eventType)
+	data, _ := args.Get(0).([]byte)
+	return data, args.Bool(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +181,9 @@ func TestDispatcher_MultipleRules(t *testing.T) {
 		{ID: "dt2", NotificationID: "n1", VendorID: "ad_platform", EventType: "order.paid"},
 	}
 	db.On("CreateDeliveryTasks", mock.Anything, "n1", []string{"crm_system", "ad_platform"}).Return(tasks, nil)
+
+	// Update notification status to DELIVERING
+	db.On("UpdateNotificationStatus", mock.Anything, "n1", "DELIVERING").Return(nil)
 
 	// Publish each delivery message
 	mq.On("PublishDelivery", mock.Anything, "crm_system", "dt1").Return(nil)

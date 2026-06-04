@@ -93,6 +93,12 @@ func (m *MockDBClient) GetDeliveryTasksByNotificationID(ctx context.Context, not
 	return tasks, args.Error(1)
 }
 
+func (m *MockDBClient) ListNotifications(ctx context.Context, callerID, event string, page, pageSize int) ([]*model.Notification, int, error) {
+	args := m.Called(ctx, callerID, event, page, pageSize)
+	notifs, _ := args.Get(0).([]*model.Notification)
+	return notifs, args.Int(1), args.Error(2)
+}
+
 // MockMQClient implements port.MQClient for testing.
 type MockMQClient struct{ mock.Mock }
 
@@ -130,6 +136,12 @@ func (m *MockConfigProvider) GetRoutingRules(eventType string) []port.RoutingRul
 	args := m.Called(eventType)
 	rules, _ := args.Get(0).([]port.RoutingRule)
 	return rules
+}
+
+func (m *MockConfigProvider) GetEventSchema(eventType string) ([]byte, bool) {
+	args := m.Called(eventType)
+	data, _ := args.Get(0).([]byte)
+	return data, args.Bool(1)
 }
 
 // MockRequestBuilder implements delivery.RequestBuilder for testing.
@@ -186,7 +198,7 @@ var (
 				Method:  "POST",
 				URLTmpl: "https://vendor.example.com/api/notify",
 			},
-			Body: port.BodyConfig{Type: "mapping", Template: map[string]any{"event": "@{payload.order_id}"}},
+			Body: port.BodyConfig{Type: "mapping", Template: map[string]any{"event": "@{payload:order_id}"}},
 		},
 	}
 	testSuccessBody = `{"status":"ok"}`

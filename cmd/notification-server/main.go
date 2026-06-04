@@ -108,7 +108,7 @@ func main() {
 	}()
 
 	// 8. Create ingestion service and handler
-	svc := ingestion.NewService(db, mq)
+	svc := ingestion.NewService(db, mq, cfg)
 	h := handler.NewHandler(svc)
 
 	// 9. Setup HTTP router
@@ -118,6 +118,7 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 	r.Post("/api/v1/notifications", h.Ingest)
+	r.Get("/api/v1/notifications", h.List)
 	r.Get("/api/v1/notifications/{id}", h.GetStatus)
 
 	// 10. Start HTTP server

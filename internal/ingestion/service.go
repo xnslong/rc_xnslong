@@ -15,14 +15,16 @@ import (
 type Service struct {
 	db        port.DBClient
 	mq        port.MQClient
+	cfg       port.ConfigProvider
 	validator *schemaValidator
 }
 
 // NewService creates a new ingestion service.
-func NewService(db port.DBClient, mq port.MQClient) *Service {
+func NewService(db port.DBClient, mq port.MQClient, cfg port.ConfigProvider) *Service {
 	return &Service{
 		db:        db,
 		mq:        mq,
+		cfg:       cfg,
 		validator: newSchemaValidator(),
 	}
 }
@@ -66,12 +68,17 @@ func (s *Service) GetDeliveryTasks(ctx context.Context, notificationID string) (
 	return s.db.GetDeliveryTasksByNotificationID(ctx, notificationID)
 }
 
+// List retrieves notifications with optional filtering by caller_id and event type.
+func (s *Service) List(ctx context.Context, callerID, event string, page, pageSize int) ([]*model.Notification, int, error) {
+	return s.db.ListNotifications(ctx, callerID, event, page, pageSize)
+}
+
 // validateSchema retrieves the schema for the event type and validates the payload.
 // Returns ErrEventNotFound if the event type is not registered.
 // Returns *SchemaValidationError if the payload does not match the schema.
 func (s *Service) validateSchema(ctx context.Context, eventType string, payload map[string]any) error {
-	schemaDef, err := s.db.GetEventSchema(ctx, eventType)
-	if err != nil {
+	schemaDef, ok := s.cfg.GetEventSchema(eventType)
+	if !ok {
 		return &ErrEventNotFound{EventType: eventType}
 	}
 
