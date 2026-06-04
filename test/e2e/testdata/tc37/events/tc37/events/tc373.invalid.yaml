@@ -1,0 +1,9 @@
+event_type: "tc373.invalid"
+description: "TC3.7-invalid: intentionally invalid type conversion（映射 $type 强制转换失败场景）"
+version: 1
+schema:
+  type: object
+  properties:
+    count:
+      type: string
+      description: "非数字字符串，$type: integer 转换会失败"

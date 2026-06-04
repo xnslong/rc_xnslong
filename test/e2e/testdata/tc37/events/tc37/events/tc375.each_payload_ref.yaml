@@ -1,0 +1,21 @@
+event_type: "tc375.each_payload_ref"
+description: "TC3.7-each_payload_ref: $each referencing outer payload"
+version: 1
+schema:
+  type: object
+  properties:
+    user_id:
+      type: string
+      description: "用户 ID（在 $each 内部通过 @{payload:user_id} 引用）"
+    products:
+      type: array
+      description: "商品列表"
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+            description: "商品 ID"
+          qty:
+            type: integer
+            description: "数量"

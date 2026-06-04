@@ -1,0 +1,12 @@
+event_type: "tc375.each_primitive_with_format"
+description: "TC3.7-each_primitive_with_format: primitive array with $format"
+version: 1
+schema:
+  type: object
+  properties:
+    timestamps:
+      type: array
+      description: "Unix 时间戳列表，映射中通过 $format 格式化为日期"
+      items:
+        type: integer
+        x-format: unix_s

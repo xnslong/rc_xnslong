@@ -1,0 +1,8 @@
+event_type: "tc373.invalid"
+request:
+  body:
+    type: mapping
+    template:
+      invalid:
+        $source: "@{payload:count}"
+        $type: integer

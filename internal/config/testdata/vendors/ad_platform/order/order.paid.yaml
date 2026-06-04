@@ -1,0 +1,8 @@
+event_type: "order.paid"
+request:
+  body:
+    type: mapping
+    template:
+      event: "purchase"
+      amount: "@{payload:amount}"
+      currency: "@{payload:currency}"

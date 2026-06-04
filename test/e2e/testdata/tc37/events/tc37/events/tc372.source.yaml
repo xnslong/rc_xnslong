@@ -1,0 +1,20 @@
+event_type: "tc372.source"
+description: "TC3.7.2: $source original type preservation"
+version: 1
+schema:
+  type: object
+  properties:
+    count:
+      type: integer
+      description: "数量（原始类型保持）"
+    active:
+      type: boolean
+      description: "启用状态"
+    note:
+      type:
+        - "string"
+        - "null"
+      description: "备注"
+    id:
+      type: integer
+      description: "用户 ID"

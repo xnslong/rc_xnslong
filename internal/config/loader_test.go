@@ -10,53 +10,117 @@ import (
 )
 
 // TestConfigLoader_GetRoutingRules verifies that GetRoutingRules returns
-// routing rules for a given event type.
-//
-// Currently Loader.GetRoutingRules is a stub (returns nil). When Load is
-// implemented, this test should provide a routing_rules.yaml file, call
-// Load, and verify that GetRoutingRules("order.paid") returns the correct
-// vendor list: [crm_system, ad_platform].
+// routing rules loaded from events/{biz}/route.yaml.
 func TestConfigLoader_GetRoutingRules(t *testing.T) {
-	loader, err := config.NewLoader("testdata/routing_rules.yaml")
+	loader, err := config.NewLoader("testdata")
 	require.NoError(t, err)
 	require.NotNil(t, loader)
 
-	// Stub: GetRoutingRules currently returns nil.
+	err = loader.Load(context.Background())
+	require.NoError(t, err)
+
 	rules := loader.GetRoutingRules("order.paid")
-	assert.Empty(t, rules, "GetRoutingRules should return empty slice for stub")
+	require.Len(t, rules, 2, "order.paid should route to 2 vendors")
+
+	// Collect vendor IDs for easier assertion.
+	vendorIDs := make([]string, len(rules))
+	for i, r := range rules {
+		vendorIDs[i] = r.VendorID
+	}
+	assert.Contains(t, vendorIDs, "crm_system")
+	assert.Contains(t, vendorIDs, "ad_platform")
 }
 
 // TestConfigLoader_GetVendorConfig verifies that GetVendorConfig returns
-// the full vendor configuration including URL, Headers, and Retry policy.
-//
-// Currently Loader.GetVendorConfig is a stub (returns nil, false). When Load
-// is implemented, this test should provide a vendors/crm_system.yaml file,
-// call Load, and verify that GetVendorConfig("crm_system") returns a complete
-// VendorConfig with the correct URL template, headers, and retry policy.
+// the full vendor configuration loaded from vendors/{vendor}/vendor.yaml.
 func TestConfigLoader_GetVendorConfig(t *testing.T) {
-	loader, err := config.NewLoader("testdata/vendors/crm_system.yaml")
+	loader, err := config.NewLoader("testdata")
 	require.NoError(t, err)
 	require.NotNil(t, loader)
 
-	// Stub: GetVendorConfig currently returns nil, false.
+	err = loader.Load(context.Background())
+	require.NoError(t, err)
+
 	vendor, ok := loader.GetVendorConfig("crm_system")
-	assert.False(t, ok, "GetVendorConfig should return ok=false for stub")
-	assert.Nil(t, vendor, "GetVendorConfig should return nil for stub")
+	require.True(t, ok)
+	require.NotNil(t, vendor)
+
+	assert.Equal(t, "crm_system", vendor.VendorID)
+	assert.Equal(t, "PATCH", vendor.Request.Method)
+	assert.Equal(t, "https://crm.company.com/api/v3/contacts/@{payload.user_id}", vendor.Request.URLTmpl)
+	assert.Equal(t, "Bearer crm_api_token_xxx", vendor.Request.Headers["Authorization"])
+	assert.Equal(t, 5, vendor.Retry.MaxAttempts)
+}
+
+// TestConfigLoader_GetDeliverySpec verifies that GetDeliverySpec merges
+// vendor config with delivery contract overrides.
+func TestConfigLoader_GetDeliverySpec(t *testing.T) {
+	loader, err := config.NewLoader("testdata")
+	require.NoError(t, err)
+	require.NotNil(t, loader)
+
+	err = loader.Load(context.Background())
+	require.NoError(t, err)
+
+	spec, ok := loader.GetDeliverySpec("crm_system", "order.paid")
+	require.True(t, ok)
+	require.NotNil(t, spec)
+
+	// Method and URL come from vendor defaults.
+	assert.Equal(t, "PATCH", spec.Mapping.Request.Method)
+	assert.Equal(t, "https://crm.company.com/api/v3/contacts/@{payload.user_id}", spec.Mapping.Request.URLTmpl)
+
+	// Body template comes from the delivery contract.
+	assert.Equal(t, "mapping", spec.Mapping.Body.Type)
+	require.NotNil(t, spec.Mapping.Body.Template)
+	assert.Equal(t, "customer", spec.Mapping.Body.Template["lifecyclestage"])
+}
+
+// TestConfigLoader_GetDeliverySpec_NoContract verifies that GetDeliverySpec
+// falls back to vendor body config when no contract exists.
+func TestConfigLoader_GetDeliverySpec_NoContract(t *testing.T) {
+	loader, err := config.NewLoader("testdata")
+	require.NoError(t, err)
+	require.NotNil(t, loader)
+
+	err = loader.Load(context.Background())
+	require.NoError(t, err)
+
+	// "user.registered" has a schema but no routing rule or delivery contract.
+	// It should still resolve to vendor defaults.
+	spec, ok := loader.GetDeliverySpec("ad_platform", "user.registered")
+	require.True(t, ok)
+	require.NotNil(t, spec)
+
+	assert.Equal(t, "POST", spec.Mapping.Request.Method)
+	assert.Equal(t, "mapping", spec.Mapping.Body.Type)
+	assert.Nil(t, spec.Mapping.Body.Template)
+}
+
+// TestConfigLoader_GetEventSchema verifies that GetEventSchema returns
+// the JSON schema loaded from events/{biz}/events/{event}.yaml.
+func TestConfigLoader_GetEventSchema(t *testing.T) {
+	loader, err := config.NewLoader("testdata")
+	require.NoError(t, err)
+	require.NotNil(t, loader)
+
+	err = loader.Load(context.Background())
+	require.NoError(t, err)
+
+	schema, ok := loader.GetEventSchema("order.paid")
+	require.True(t, ok)
+	require.NotNil(t, schema)
+	assert.Contains(t, string(schema), "order_id")
+	assert.Contains(t, string(schema), "amount")
 }
 
 // TestConfigLoader_Load_Error verifies that Load returns an error when
 // the configuration path does not exist.
-//
-// Currently Loader.Load is a stub (returns nil). When Load is implemented,
-// this test should provide a non-existent path and assert that Load returns
-// a non-nil error.
 func TestConfigLoader_Load_Error(t *testing.T) {
-	loader, err := config.NewLoader("/nonexistent/path/config.yaml")
+	loader, err := config.NewLoader("/nonexistent/path")
 	require.NoError(t, err)
 	require.NotNil(t, loader)
 
-	// Stub: Load currently returns nil even for invalid paths.
-	// When Load is implemented, this should return an error.
 	err = loader.Load(context.Background())
 	assert.Error(t, err)
 }

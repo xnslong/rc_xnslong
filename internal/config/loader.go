@@ -17,18 +17,22 @@ import (
 
 // ---- YAML intermediate types ----
 
-// routingRulesFile is the YAML representation of routing_rules.yaml.
-type routingRulesFile struct {
-	Rules []routingRuleItem `yaml:"rules"`
-}
-
+// routingRuleItem is a single event_type → vendor_id mapping.
 type routingRuleItem struct {
 	EventType string `yaml:"event_type"`
 	VendorID  string `yaml:"vendor_id"`
 }
 
-// vendorConfigFile is the YAML representation of a vendor config file.
-// body.template is NOT in the vendor YAML — it lives in mappings/{vid}/{event}.yaml.
+// bizRouteFile is the YAML representation of events/{biz}/route.yaml.
+type bizRouteFile struct {
+	Biz   string            `yaml:"biz"`
+	Rules []routingRuleItem `yaml:"rules"`
+}
+
+// vendorConfigFile is the YAML representation of a vendor config file
+// located at vendors/{vendor}/vendor.yaml.
+// body.template is NOT in the vendor YAML — it lives in the delivery contract
+// at vendors/{vendor}/{biz}/{event}.yaml.
 type vendorConfigFile struct {
 	VendorID string `yaml:"vendor_id"`
 	Request  struct {
@@ -49,11 +53,16 @@ type vendorConfigFile struct {
 	ResponseJudgment *vendorResponseJudgment `yaml:"response_judgment"`
 }
 
-// mappingConfigFile is the YAML representation of a mapping file.
-type mappingConfigFile struct {
+// deliveryContractFile is the YAML representation of a delivery contract
+// located at vendors/{vendor}/{biz}/{event}.yaml.
+// Fields are optional overrides — empty fields inherit from vendor config.
+type deliveryContractFile struct {
 	EventType string `yaml:"event_type"`
 	Request   struct {
-		Body struct {
+		Method  string            `yaml:"method"`
+		URL     string            `yaml:"url"`
+		Headers map[string]string `yaml:"headers"`
+		Body    struct {
 			Type     string         `yaml:"type"`
 			Template map[string]any `yaml:"template"`
 		} `yaml:"body"`
@@ -89,19 +98,19 @@ type Loader struct {
 	paths []string
 
 	// loaded state — populated by Load()
-	routingRules   []port.RoutingRule
-	vendorConfigs  map[string]*port.VendorConfig
-	mappingConfigs map[string]*port.MappingConfig // key: "vendorID/eventType"
-	eventSchemas   map[string][]byte              // key: eventType
+	routingRules      []port.RoutingRule
+	vendorConfigs     map[string]*port.VendorConfig
+	deliveryContracts map[string]*deliveryContractFile // key: "vendorID/eventType"
+	eventSchemas      map[string][]byte                 // key: eventType
 }
 
 // NewLoader creates a new config loader for the given config file or directory paths.
 func NewLoader(paths ...string) (*Loader, error) {
 	return &Loader{
-		paths:          paths,
-		vendorConfigs:  make(map[string]*port.VendorConfig),
-		mappingConfigs: make(map[string]*port.MappingConfig),
-		eventSchemas:   make(map[string][]byte),
+		paths:             paths,
+		vendorConfigs:     make(map[string]*port.VendorConfig),
+		deliveryContracts: make(map[string]*deliveryContractFile),
+		eventSchemas:      make(map[string][]byte),
 	}, nil
 }
 
@@ -126,56 +135,33 @@ func (l *Loader) Load(ctx context.Context) error {
 	return nil
 }
 
-// loadDir loads a configuration directory.
+// loadDir loads a configuration directory in the DD §4.1 structure:
+//
+//	config/
+//	├── events/
+//	│   └── {biz}/
+//	│       ├── route.yaml                     routing rules
+//	│       └── events/
+//	│           └── {event}.yaml                event schema
+//	└── vendors/
+//	    └── {vendor}/
+//	        ├── vendor.yaml                    vendor config
+//	        └── {biz}/
+//	            └── {event}.yaml               delivery contract
 func (l *Loader) loadDir(dir string) error {
-	// Load routing_rules.yaml from the directory root.
-	rulesPath := filepath.Join(dir, "routing_rules.yaml")
-	if info, err := os.Stat(rulesPath); err == nil && !info.IsDir() {
-		if err := l.loadRoutingRules(rulesPath); err != nil {
-			return err
-		}
-	}
-
-	// Load vendor files from vendors/ subdirectory.
-	vendorsDir := filepath.Join(dir, "vendors")
-	if info, err := os.Stat(vendorsDir); err == nil && info.IsDir() {
-		entries, err := os.ReadDir(vendorsDir)
-		if err != nil {
-			return fmt.Errorf("reading vendors dir %q: %w", vendorsDir, err)
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			if filepath.Ext(entry.Name()) == ".yaml" {
-				vendorPath := filepath.Join(vendorsDir, entry.Name())
-				if err := l.loadVendorConfig(vendorPath); err != nil {
-					return err
-				}
-			}
-		}
-	}
-
-	// Load mapping files from mappings/{vendor_id}/*.yaml.
-	mappingsDir := filepath.Join(dir, "mappings")
-	if info, err := os.Stat(mappingsDir); err == nil && info.IsDir() {
-		if err := l.loadMappingsDir(mappingsDir); err != nil {
-			return err
-		}
-	}
-
-	// Load event schemas from event_schemas/ (flat structure).
-	schemasDir := filepath.Join(dir, "event_schemas")
-	if info, err := os.Stat(schemasDir); err == nil && info.IsDir() {
-		if err := l.loadFlatEventSchemas(schemasDir); err != nil {
-			return err
-		}
-	}
-
-	// Load event schemas from events/{biz}/events/ (DD §4.1 hierarchical structure).
 	eventsDir := filepath.Join(dir, "events")
 	if info, err := os.Stat(eventsDir); err == nil && info.IsDir() {
+		if err := l.loadRoutesFromEventsDir(eventsDir); err != nil {
+			return err
+		}
 		if err := l.loadHierarchicalEventSchemas(eventsDir); err != nil {
+			return err
+		}
+	}
+
+	vendorsDir := filepath.Join(dir, "vendors")
+	if info, err := os.Stat(vendorsDir); err == nil && info.IsDir() {
+		if err := l.loadVendorsDir(vendorsDir); err != nil {
 			return err
 		}
 	}
@@ -186,21 +172,48 @@ func (l *Loader) loadDir(dir string) error {
 // loadFile loads a single YAML file, determining its type from the filename.
 func (l *Loader) loadFile(path string) error {
 	base := filepath.Base(path)
-	if base == "routing_rules.yaml" {
-		return l.loadRoutingRules(path)
+	switch base {
+	case "route.yaml":
+		return l.loadBizRoute(path)
+	case "vendor.yaml":
+		return l.loadVendorConfig(path)
+	default:
+		return fmt.Errorf("unknown config file type: %s", base)
 	}
-	// Any other .yaml file is treated as a vendor config.
-	return l.loadVendorConfig(path)
 }
 
-// loadRoutingRules parses a routing_rules.yaml file.
-func (l *Loader) loadRoutingRules(path string) error {
+// ---- Routing rules ----
+
+// loadRoutesFromEventsDir scans events/{biz}/route.yaml for each biz.
+func (l *Loader) loadRoutesFromEventsDir(eventsDir string) error {
+	bizEntries, err := os.ReadDir(eventsDir)
+	if err != nil {
+		return fmt.Errorf("reading events dir %q: %w", eventsDir, err)
+	}
+
+	for _, bizEntry := range bizEntries {
+		if !bizEntry.IsDir() {
+			continue
+		}
+
+		routePath := filepath.Join(eventsDir, bizEntry.Name(), "route.yaml")
+		if info, err := os.Stat(routePath); err == nil && !info.IsDir() {
+			if err := l.loadBizRoute(routePath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// loadBizRoute parses an events/{biz}/route.yaml file.
+func (l *Loader) loadBizRoute(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading file %q: %w", path, err)
 	}
 
-	var file routingRulesFile
+	var file bizRouteFile
 	if err := yaml.Unmarshal(data, &file); err != nil {
 		return fmt.Errorf("parsing %q: %w", path, err)
 	}
@@ -215,6 +228,38 @@ func (l *Loader) loadRoutingRules(path string) error {
 		})
 	}
 
+	return nil
+}
+
+// ---- Vendor configs ----
+
+// loadVendorsDir scans vendors/{vendor}/vendor.yaml and delivery contracts.
+func (l *Loader) loadVendorsDir(vendorsDir string) error {
+	vendorEntries, err := os.ReadDir(vendorsDir)
+	if err != nil {
+		return fmt.Errorf("reading vendors dir %q: %w", vendorsDir, err)
+	}
+
+	for _, entry := range vendorEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		vendorID := entry.Name()
+		vendorDir := filepath.Join(vendorsDir, vendorID)
+
+		// Load vendor.yaml
+		vendorPath := filepath.Join(vendorDir, "vendor.yaml")
+		if info, err := os.Stat(vendorPath); err == nil && !info.IsDir() {
+			if err := l.loadVendorConfig(vendorPath); err != nil {
+				return err
+			}
+		}
+
+		// Load delivery contracts: vendors/{vendorID}/{biz}/*.yaml
+		if err := l.loadDeliveryContractsForVendor(vendorDir, vendorID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -268,30 +313,32 @@ func (l *Loader) loadVendorConfig(path string) error {
 	return nil
 }
 
-// loadMappingsDir loads all mapping files from a mappings/ directory.
-// Structure: mappings/{vendor_id}/{event_type}.yaml
-func (l *Loader) loadMappingsDir(dir string) error {
-	entries, err := os.ReadDir(dir)
+// ---- Delivery contracts ----
+
+// loadDeliveryContractsForVendor scans vendors/{vendor}/{biz}/*.yaml for delivery contracts.
+func (l *Loader) loadDeliveryContractsForVendor(vendorDir, vendorID string) error {
+	entries, err := os.ReadDir(vendorDir)
 	if err != nil {
-		return fmt.Errorf("reading mappings dir %q: %w", dir, err)
+		return fmt.Errorf("reading vendor dir %q: %w", vendorDir, err)
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || entry.Name() == "vendor.yaml" {
 			continue
 		}
-		vendorID := entry.Name()
-		vendorDir := filepath.Join(dir, vendorID)
-		vendorEntries, err := os.ReadDir(vendorDir)
+
+		bizDir := filepath.Join(vendorDir, entry.Name())
+		bizEntries, err := os.ReadDir(bizDir)
 		if err != nil {
-			return fmt.Errorf("reading vendor mappings dir %q: %w", vendorDir, err)
+			return fmt.Errorf("reading biz dir %q: %w", bizDir, err)
 		}
-		for _, fe := range vendorEntries {
+
+		for _, fe := range bizEntries {
 			if fe.IsDir() || filepath.Ext(fe.Name()) != ".yaml" {
 				continue
 			}
-			mappingPath := filepath.Join(vendorDir, fe.Name())
-			if err := l.loadMappingFile(mappingPath, vendorID); err != nil {
+			contractPath := filepath.Join(bizDir, fe.Name())
+			if err := l.loadDeliveryContract(contractPath, vendorID); err != nil {
 				return err
 			}
 		}
@@ -299,14 +346,14 @@ func (l *Loader) loadMappingsDir(dir string) error {
 	return nil
 }
 
-// loadMappingFile parses a single mapping YAML file and stores it.
-func (l *Loader) loadMappingFile(path, vendorID string) error {
+// loadDeliveryContract parses a single delivery contract YAML file and stores it.
+func (l *Loader) loadDeliveryContract(path, vendorID string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading file %q: %w", path, err)
 	}
 
-	var file mappingConfigFile
+	var file deliveryContractFile
 	if err := yaml.Unmarshal(data, &file); err != nil {
 		return fmt.Errorf("parsing %q: %w", path, err)
 	}
@@ -321,37 +368,12 @@ func (l *Loader) loadMappingFile(path, vendorID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.mappingConfigs[key] = &port.MappingConfig{
-		EventType: eventType,
-		Body: port.BodyConfig{
-			Type:     file.Request.Body.Type,
-			Template: file.Request.Body.Template,
-		},
-	}
+	l.deliveryContracts[key] = &file
 
 	return nil
 }
 
-// loadFlatEventSchemas loads schema YAML files from a flat directory.
-// Each file is named {event_type}.yaml containing an eventSchemaFile.
-func (l *Loader) loadFlatEventSchemas(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return fmt.Errorf("reading event schemas dir %q: %w", dir, err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
-			continue
-		}
-
-		path := filepath.Join(dir, entry.Name())
-		if err := l.loadEventSchemaFile(path); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// ---- Event schemas ----
 
 // loadHierarchicalEventSchemas loads schema YAML files from events/{biz}/events/.
 func (l *Loader) loadHierarchicalEventSchemas(dir string) error {
@@ -417,6 +439,8 @@ func (l *Loader) loadEventSchemaFile(path string) error {
 
 	return nil
 }
+
+// ---- Helpers ----
 
 // parseDurationToMs parses a Go duration string and returns milliseconds.
 func parseDurationToMs(s string) (int, error) {
@@ -484,7 +508,7 @@ func (l *Loader) GetAllVendorIDs() []string {
 }
 
 // GetDeliverySpec returns the delivery specification for the given vendor and event type.
-// Merges vendor request config with mapping-level body template.
+// Merges vendor request config with per-event delivery contract overrides.
 func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, bool) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
@@ -497,15 +521,33 @@ func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec
 	spec := &port.DeliverySpec{
 		Mapping: port.MappingConfig{
 			EventType: eventType,
-			Request:   vendor.Request,
 		},
 	}
 
-	// If a mapping file exists for this (vendor, event_type), use its body template.
-	// Otherwise fall back to the vendor's own body config.
-	mappingKey := vendorID + "/" + eventType
-	if m, ok := l.mappingConfigs[mappingKey]; ok {
-		spec.Mapping.Body = m.Body
+	// Start with vendor defaults.
+	spec.Mapping.Request = vendor.Request
+
+	// Override with delivery contract fields if a contract exists for this
+	// (vendor, event_type) pair.
+	contractKey := vendorID + "/" + eventType
+	if contract, ok := l.deliveryContracts[contractKey]; ok {
+		if contract.Request.Method != "" {
+			spec.Mapping.Request.Method = contract.Request.Method
+		}
+		if contract.Request.URL != "" {
+			spec.Mapping.Request.URLTmpl = contract.Request.URL
+		}
+		if contract.Request.Headers != nil {
+			spec.Mapping.Request.Headers = contract.Request.Headers
+		}
+		if contract.Request.Body.Template != nil {
+			spec.Mapping.Body = port.BodyConfig{
+				Type:     contract.Request.Body.Type,
+				Template: contract.Request.Body.Template,
+			}
+		} else {
+			spec.Mapping.Body = vendor.Body
+		}
 	} else {
 		spec.Mapping.Body = vendor.Body
 	}

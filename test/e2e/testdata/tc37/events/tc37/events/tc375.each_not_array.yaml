@@ -1,0 +1,9 @@
+event_type: "tc375.each_not_array"
+description: "TC3.7-each_not_array: non-array $each source（映射 $each 非数组源错误场景）"
+version: 1
+schema:
+  type: object
+  properties:
+    products:
+      type: string
+      description: "非数组字符串，$each 期望数组，映射会失败"

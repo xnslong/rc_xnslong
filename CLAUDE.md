@@ -50,6 +50,24 @@ GOOS=linux   go build ./...
 * run go-vet command before each commission.
 * draw diagrams with mermaid.
 
+# conventions
+
+Config directory structure follows DD §4.1:
+
+```
+config/
+├── events/{biz}/                    # event definitions, grouped by business domain
+│   ├── route.yaml                   #   routing rules (event_type → vendor_id)
+│   └── events/{event}.yaml          #   event schema (JSON Schema Draft-07)
+└── vendors/{vendor}/                # vendor configurations
+    ├── vendor.yaml                  #   base config (method, url, headers, retry, judgment)
+    └── {biz}/{event}.yaml           #   delivery contract (body.template + optional field overrides)
+```
+
+- **Event schemas** are the authoritative data contract. The data producer MUST declare every payload field the event carries — type, nested structure, and constraints — regardless of which vendors consume it. Vendors discover available fields from the schema alone.
+- **Delivery contracts** define how the unified payload maps to a vendor's API format. `body.template` MUST only reference fields declared in the event schema (`@{payload:...}`). References to undeclared fields are invalid — the schema is the single source of truth, not runtime payload inspection.
+- **Route files** live alongside their event schemas under `events/{biz}/route.yaml`, keeping routing decisions near the events they govern.
+
 # development guide
 
 Use Outside-In TDD in development flow on development activity. 

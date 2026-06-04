@@ -1,0 +1,11 @@
+event_type: "tc375.each_primitive_with_format"
+request:
+  body:
+    type: mapping
+    template:
+      items_mapped:
+        $source: "@{payload:timestamps}"
+        $each:
+          date:
+            $source: "@{item}"
+            $format: "2006-01-02"

@@ -1,0 +1,7 @@
+event_type: "tc373.no_explicit"
+request:
+  body:
+    type: mapping
+    template:
+      count:
+        $source: "@{payload:count}"

@@ -1,0 +1,11 @@
+event_type: "tc375.each_primitive"
+description: "TC3.7-each_primitive: primitive array with @{item}"
+version: 1
+schema:
+  type: object
+  properties:
+    produce_list:
+      type: array
+      description: "原始值数组（整数列表），映射中使用 @{item} 直接引用元素"
+      items:
+        type: integer

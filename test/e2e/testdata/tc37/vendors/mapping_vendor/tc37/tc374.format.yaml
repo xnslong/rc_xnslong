@@ -1,0 +1,8 @@
+event_type: "tc374.format"
+request:
+  body:
+    type: mapping
+    template:
+      formatted_date:
+        $source: "@{payload:paid_at}"
+        $format: "2006-01-02"

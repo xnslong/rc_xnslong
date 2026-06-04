@@ -1,0 +1,10 @@
+event_type: "tc374.format"
+description: "TC3.7.4: $format timestamp conversion"
+version: 1
+schema:
+  type: object
+  properties:
+    paid_at:
+      type: integer
+      x-format: unix_s
+      description: "Unix 秒级时间戳，映射中格式化为 2006-01-02"

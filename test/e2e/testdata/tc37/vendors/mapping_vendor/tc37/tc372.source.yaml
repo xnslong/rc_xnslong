@@ -1,0 +1,13 @@
+event_type: "tc372.source"
+request:
+  body:
+    type: mapping
+    template:
+      count:
+        $source: "@{payload:count}"
+      active:
+        $source: "@{payload:active}"
+      note:
+        $source: "@{payload:note}"
+      prefixed:
+        $source: "id_@{payload:id}"

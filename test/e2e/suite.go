@@ -51,7 +51,7 @@ type Suite struct {
 // notification-server as a subprocess using the default testdata configuration.
 func SetupSuite() (*Suite, error) {
 	_, filename, _, _ := runtime.Caller(0)
-	testdataDir := filepath.Join(filepath.Dir(filename), "testdata")
+	testdataDir := filepath.Join(filepath.Dir(filename), "testdata", "common")
 	projectRoot := filepath.Join(filepath.Dir(filename), "..", "..")
 
 	// Load config to discover all vendor IDs

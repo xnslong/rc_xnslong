@@ -1,0 +1,14 @@
+event_type: "tc375.each_nested"
+request:
+  body:
+    type: mapping
+    template:
+      orders_mapped:
+        $source: "@{payload:orders}"
+        $each:
+          order_id: "@{item:id}"
+          products:
+            $source: "@{item:items}"
+            $each:
+              product_name: "@{item:name}"
+              cost: "@{item:price}"

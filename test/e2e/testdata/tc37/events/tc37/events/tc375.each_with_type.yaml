@@ -1,0 +1,18 @@
+event_type: "tc375.each_with_type"
+description: "TC3.7-each_with_type: $each with $type"
+version: 1
+schema:
+  type: object
+  properties:
+    items:
+      type: array
+      description: "项目列表"
+      items:
+        type: object
+        properties:
+          price:
+            type: string
+            description: "价格（字符串），映射中转为 number"
+          count:
+            type: string
+            description: "数量（字符串），映射中转为 integer"

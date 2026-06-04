@@ -1,0 +1,14 @@
+event_type: "tc375.each_with_type"
+request:
+  body:
+    type: mapping
+    template:
+      items_mapped:
+        $source: "@{payload:items}"
+        $each:
+          price:
+            $source: "@{item:price}"
+            $type: number
+          count:
+            $source: "@{item:count}"
+            $type: integer

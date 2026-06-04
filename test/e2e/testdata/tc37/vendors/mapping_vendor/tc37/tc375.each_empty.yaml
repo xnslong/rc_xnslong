@@ -1,0 +1,9 @@
+event_type: "tc375.each_empty"
+request:
+  body:
+    type: mapping
+    template:
+      products_mapped:
+        $source: "@{payload:products}"
+        $each:
+          product_id: "@{item:id}"

@@ -18,381 +18,56 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Helper: copyDir
+// ---------------------------------------------------------------------------
+
+// copyDir recursively copies a directory tree from src to dst.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, _ := filepath.Rel(src, path)
+		target := filepath.Join(dst, relPath)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0644)
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Helper: createMappingTestConfig
 // ---------------------------------------------------------------------------
 
-// createMappingTestConfig creates a temp config directory with a dedicated
-// vendor, event schemas, routing rules, and mapping files for TC3.7 tests.
+// createMappingTestConfig copies the pre-built tc37 testdata directory to
+// a temp location and returns the path.  The directory follows DD §4.1:
+//
+//	testdata/tc37/
+//	├── events/
+//	│   └── tc37/
+//	│       ├── route.yaml
+//	│       └── events/        event schemas (18 files)
+//	└── vendors/
+//	    └── mapping_vendor/
+//	        ├── vendor.yaml
+//	        └── tc37/           delivery contracts (18 files)
 func createMappingTestConfig(t *testing.T) string {
 	t.Helper()
+
+	_, filename, _, _ := runtime.Caller(0)
+	projectRoot := filepath.Join(filepath.Dir(filename), "..", "..")
+	srcDir := filepath.Join(projectRoot, "test", "e2e", "testdata", "tc37")
 
 	tmpDir, err := os.MkdirTemp("", "e2e-mapping-*")
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(tmpDir) })
 
-	// Directory structure
-	for _, d := range []string{"vendors", "mappings/mapping_vendor", "event_schemas"} {
-		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, d), 0755))
-	}
-
-	// Vendor YAML
-	vendorYAML := `vendor_id: "mapping_vendor"
-request:
-  method: POST
-  url: "http://localhost:19093/api/notify"
-  headers:
-    Content-Type: "application/json"
-  body:
-    type: mapping
-retry_policy:
-  max_attempts: 1
-  base_delay: 1s
-  max_delay: 5s
-  multiplier: 2.0
-  jitter: 0.2
-response_judgment:
-  success:
-    type: http_status
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "vendors", "mapping_vendor.yaml"), []byte(vendorYAML), 0644))
-
-	// Routing rules
-	routingYAML := `rules:
-  - event_type: "tc371.field_ref"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc372.source"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc373.type"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc374.format"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc373.invalid"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc373.no_explicit"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_basic"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_with_format"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_with_type"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_static"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_nested"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_payload_ref"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_empty"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_not_array"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_primitive"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_primitive_with_type"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_primitive_with_format"
-    vendor_id: "mapping_vendor"
-  - event_type: "tc375.each_primitive_empty"
-    vendor_id: "mapping_vendor"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "routing_rules.yaml"), []byte(routingYAML), 0644))
-
-	// Event schemas (minimal — accept any object)
-	allEventTypes := []string{
-		"tc371.field_ref", "tc372.source", "tc373.type", "tc374.format",
-		"tc373.invalid", "tc373.no_explicit",
-		"tc375.each_basic", "tc375.each_with_format", "tc375.each_with_type",
-		"tc375.each_static", "tc375.each_nested", "tc375.each_payload_ref",
-		"tc375.each_empty", "tc375.each_not_array",
-		"tc375.each_primitive", "tc375.each_primitive_with_type",
-		"tc375.each_primitive_with_format", "tc375.each_primitive_empty",
-	}
-	for _, eventType := range allEventTypes {
-		schemaYAML := fmt.Sprintf(`event_type: %q
-schema:
-  type: object
-`, eventType)
-		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "event_schemas", eventType+".yaml"), []byte(schemaYAML), 0644))
-	}
-
-	// Override schema for tc373.no_explicit — declare count as integer
-	schemaNoExplicit := `event_type: "tc373.no_explicit"
-schema:
-  type: object
-  properties:
-    count:
-      type: integer
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "event_schemas", "tc373.no_explicit.yaml"), []byte(schemaNoExplicit), 0644))
-
-	// Mapping files
-	// TC3.7.1 — @{payload:field} field references
-	mapping371 := `event_type: "tc371.field_ref"
-request:
-  body:
-    type: mapping
-    template:
-      order_id: "@{payload:order_id}"
-      nested_val: "@{payload:a.b.c}"
-      missing_val: "@{payload:missing}"
-      non_map_val: "@{payload:str.x}"
-      static_val: "static-value"
-      mixed_val: "user-@{payload:id}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc371.field_ref.yaml"), []byte(mapping371), 0644))
-
-	// TC3.7.2 — $source original type preservation
-	mapping372 := `event_type: "tc372.source"
-request:
-  body:
-    type: mapping
-    template:
-      count:
-        $source: "@{payload:count}"
-      active:
-        $source: "@{payload:active}"
-      note:
-        $source: "@{payload:note}"
-      prefixed:
-        $source: "id_@{payload:id}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc372.source.yaml"), []byte(mapping372), 0644))
-
-	// TC3.7.3 — $type force type conversion
-	mapping373 := `event_type: "tc373.type"
-request:
-  body:
-    type: mapping
-    template:
-      as_string:
-        $source: "@{payload:count}"
-        $type: string
-      as_int:
-        $source: "@{payload:count_str}"
-        $type: integer
-      as_number:
-        $source: "@{payload:price}"
-        $type: number
-      as_bool:
-        $source: "@{payload:flag}"
-        $type: boolean
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc373.type.yaml"), []byte(mapping373), 0644))
-
-	// TC3.7.4 — $format timestamp conversion
-	mapping374 := `event_type: "tc374.format"
-request:
-  body:
-    type: mapping
-    template:
-      formatted_date:
-        $source: "@{payload:paid_at}"
-        $format: "2006-01-02"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc374.format.yaml"), []byte(mapping374), 0644))
-
-	// TC3.7-invalid_conversion — intentionally invalid type conversion
-	mappingInvalid := `event_type: "tc373.invalid"
-request:
-  body:
-    type: mapping
-    template:
-      invalid:
-        $source: "@{payload:count}"
-        $type: integer
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc373.invalid.yaml"), []byte(mappingInvalid), 0644))
-
-	// TC3.7-type_no_explicit — no $type, uses event schema declared type
-	mappingNoExplicit := `event_type: "tc373.no_explicit"
-request:
-  body:
-    type: mapping
-    template:
-      count:
-        $source: "@{payload:count}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc373.no_explicit.yaml"), []byte(mappingNoExplicit), 0644))
-
-	// TC3.7.5 — $each array traversal mapping tests
-
-	// TC3.7-each_basic: basic $each array mapping
-	mappingEachBasic := `event_type: "tc375.each_basic"
-request:
-  body:
-    type: mapping
-    template:
-      products_mapped:
-        $source: "@{payload:products}"
-        $each:
-          product_id: "@{item:id}"
-          quantity: "@{item:qty}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_basic.yaml"), []byte(mappingEachBasic), 0644))
-
-	// TC3.7-each_with_format: $each with $format
-	mappingEachWithFormat := `event_type: "tc375.each_with_format"
-request:
-  body:
-    type: mapping
-    template:
-      orders_mapped:
-        $source: "@{payload:orders}"
-        $each:
-          order_date:
-            $source: "@{item:date}"
-            $format: "2006-01-02"
-          amount: "@{item:total}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_with_format.yaml"), []byte(mappingEachWithFormat), 0644))
-
-	// TC3.7-each_with_type: $each with $type
-	mappingEachWithType := `event_type: "tc375.each_with_type"
-request:
-  body:
-    type: mapping
-    template:
-      items_mapped:
-        $source: "@{payload:items}"
-        $each:
-          price:
-            $source: "@{item:price}"
-            $type: number
-          count:
-            $source: "@{item:count}"
-            $type: integer
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_with_type.yaml"), []byte(mappingEachWithType), 0644))
-
-	// TC3.7-each_static_mixed: $each with static fields mixed in
-	mappingEachStatic := `event_type: "tc375.each_static"
-request:
-  body:
-    type: mapping
-    template:
-      products_mapped:
-        $source: "@{payload:products}"
-        $each:
-          product_id: "@{item:id}"
-          source: "notification"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_static.yaml"), []byte(mappingEachStatic), 0644))
-
-	// TC3.7-each_nested: nested $each
-	mappingEachNested := `event_type: "tc375.each_nested"
-request:
-  body:
-    type: mapping
-    template:
-      orders_mapped:
-        $source: "@{payload:orders}"
-        $each:
-          order_id: "@{item:id}"
-          products:
-            $source: "@{item:items}"
-            $each:
-              product_name: "@{item:name}"
-              cost: "@{item:price}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_nested.yaml"), []byte(mappingEachNested), 0644))
-
-	// TC3.7-each_payload_ref: $each referencing outer payload
-	mappingEachPayloadRef := `event_type: "tc375.each_payload_ref"
-request:
-  body:
-    type: mapping
-    template:
-      products_mapped:
-        $source: "@{payload:products}"
-        $each:
-          product_id: "@{item:id}"
-          quantity: "@{item:qty}"
-          user: "@{payload:user_id}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_payload_ref.yaml"), []byte(mappingEachPayloadRef), 0644))
-
-	// TC3.7-each_empty_array: empty array
-	mappingEachEmpty := `event_type: "tc375.each_empty"
-request:
-  body:
-    type: mapping
-    template:
-      products_mapped:
-        $source: "@{payload:products}"
-        $each:
-          product_id: "@{item:id}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_empty.yaml"), []byte(mappingEachEmpty), 0644))
-
-	// TC3.7-each_not_array: non-array source
-	mappingEachNotArray := `event_type: "tc375.each_not_array"
-request:
-  body:
-    type: mapping
-    template:
-      products_mapped:
-        $source: "@{payload:products}"
-        $each:
-          product_id: "@{item:id}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_not_array.yaml"), []byte(mappingEachNotArray), 0644))
-
-	// TC3.7-each_primitive: primitive array with @{item}
-	mappingEachPrimitive := `event_type: "tc375.each_primitive"
-request:
-  body:
-    type: mapping
-    template:
-      items_mapped:
-        $source: "@{payload:produce_list}"
-        $each:
-          product: "@{item}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_primitive.yaml"), []byte(mappingEachPrimitive), 0644))
-
-	// TC3.7-each_primitive_with_type: primitive array with $type
-	mappingEachPrimitiveWithType := `event_type: "tc375.each_primitive_with_type"
-request:
-  body:
-    type: mapping
-    template:
-      items_mapped:
-        $source: "@{payload:produce_list}"
-        $each:
-          product:
-            $source: "@{item}"
-            $type: string
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_primitive_with_type.yaml"), []byte(mappingEachPrimitiveWithType), 0644))
-
-	// TC3.7-each_primitive_with_format: primitive array with $format
-	mappingEachPrimitiveWithFormat := `event_type: "tc375.each_primitive_with_format"
-request:
-  body:
-    type: mapping
-    template:
-      items_mapped:
-        $source: "@{payload:timestamps}"
-        $each:
-          date:
-            $source: "@{item}"
-            $format: "2006-01-02"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_primitive_with_format.yaml"), []byte(mappingEachPrimitiveWithFormat), 0644))
-
-	// TC3.7-each_primitive_empty: empty primitive array
-	mappingEachPrimitiveEmpty := `event_type: "tc375.each_primitive_empty"
-request:
-  body:
-    type: mapping
-    template:
-      items_mapped:
-        $source: "@{payload:produce_list}"
-        $each:
-          product: "@{item}"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "mappings", "mapping_vendor", "tc375.each_primitive_empty.yaml"), []byte(mappingEachPrimitiveEmpty), 0644))
-
+	require.NoError(t, copyDir(srcDir, tmpDir))
 	return tmpDir
 }
 
@@ -440,8 +115,13 @@ func waitForStatusMapping(baseURL, id string, expected []string, timeout time.Du
 }
 
 // ---------------------------------------------------------------------------
-// TC3.7.1 @{payload:field} — 字段引用取值
+// TC3.7 @{payload:field} — 字段引用取值
 // ---------------------------------------------------------------------------
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc371.field_ref.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc371.field_ref.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc371.field_ref.yaml](testdata/tc37/events/tc37/events/tc371.field_ref.yaml)
 
 // @test-case TC3.7-pure_field_ref
 // @test-case TC3.7-nested_path
@@ -489,6 +169,11 @@ func TestMapping_FieldRef(t *testing.T) {
 // ---------------------------------------------------------------------------
 // TC3.7.2 $source — 原始类型保持
 // ---------------------------------------------------------------------------
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc372.source.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc372.source.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc372.source.yaml](testdata/tc37/events/tc37/events/tc372.source.yaml)
 
 // @test-case TC3.7-source_integer
 // @test-case TC3.7-source_boolean
@@ -532,6 +217,11 @@ func TestMapping_SourceDirective(t *testing.T) {
 // ---------------------------------------------------------------------------
 // TC3.7.3 $type — 强制类型转换
 // ---------------------------------------------------------------------------
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc373.type.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc373.type.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc373.type.yaml](testdata/tc37/events/tc37/events/tc373.type.yaml)
 
 // @test-case TC3.7-type_int_to_string
 // @test-case TC3.7-type_string_to_int
@@ -578,6 +268,15 @@ func TestMapping_TypeConversion(t *testing.T) {
 	assert.Equal(t, "SUCCEEDED", status)
 }
 
+// ---------------------------------------------------------------------------
+// TC3.7-type_invalid_conversion
+// ---------------------------------------------------------------------------
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc373.invalid.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc373.invalid.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc373.invalid.yaml](testdata/tc37/events/tc37/events/tc373.invalid.yaml)
+
 // @test-case TC3.7-type_invalid_conversion
 func TestMapping_InvalidConversion(t *testing.T) {
 	projectRoot := getProjectRootMapping()
@@ -613,6 +312,11 @@ func TestMapping_InvalidConversion(t *testing.T) {
 // ---------------------------------------------------------------------------
 // TC3.7-type_no_explicit — 无$type时使用event schema声明的类型
 // ---------------------------------------------------------------------------
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc373.no_explicit.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc373.no_explicit.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc373.no_explicit.yaml](testdata/tc37/events/tc37/events/tc373.no_explicit.yaml)
 
 // @test-case TC3.7-type_no_explicit
 func TestMapping_NoExplicitType(t *testing.T) {
@@ -651,6 +355,11 @@ func TestMapping_NoExplicitType(t *testing.T) {
 // ---------------------------------------------------------------------------
 // TC3.7.4 $format — 格式转换
 // ---------------------------------------------------------------------------
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc374.format.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc374.format.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc374.format.yaml](testdata/tc37/events/tc37/events/tc374.format.yaml)
 
 // @test-case TC3.7-format_timestamp
 func TestMapping_FormatConversion(t *testing.T) {
@@ -689,6 +398,11 @@ func TestMapping_FormatConversion(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // @test-case TC3.7-each_basic
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_basic.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_basic.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_basic.yaml](testdata/tc37/events/tc37/events/tc375.each_basic.yaml)
 func TestMapping_EachBasic(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -727,6 +441,11 @@ func TestMapping_EachBasic(t *testing.T) {
 }
 
 // @test-case TC3.7-each_with_format
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_with_format.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_with_format.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_with_format.yaml](testdata/tc37/events/tc37/events/tc375.each_with_format.yaml)
 func TestMapping_EachWithFormat(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -764,6 +483,11 @@ func TestMapping_EachWithFormat(t *testing.T) {
 }
 
 // @test-case TC3.7-each_with_type
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_with_type.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_with_type.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_with_type.yaml](testdata/tc37/events/tc37/events/tc375.each_with_type.yaml)
 func TestMapping_EachWithType(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -802,6 +526,11 @@ func TestMapping_EachWithType(t *testing.T) {
 }
 
 // @test-case TC3.7-each_static_mixed
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_static.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_static.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_static.yaml](testdata/tc37/events/tc37/events/tc375.each_static.yaml)
 func TestMapping_EachStaticMixed(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -839,6 +568,11 @@ func TestMapping_EachStaticMixed(t *testing.T) {
 }
 
 // @test-case TC3.7-each_nested
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_nested.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_nested.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_nested.yaml](testdata/tc37/events/tc37/events/tc375.each_nested.yaml)
 func TestMapping_EachNested(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -881,6 +615,11 @@ func TestMapping_EachNested(t *testing.T) {
 }
 
 // @test-case TC3.7-each_payload_ref
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_payload_ref.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_payload_ref.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_payload_ref.yaml](testdata/tc37/events/tc37/events/tc375.each_payload_ref.yaml)
 func TestMapping_EachPayloadRef(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -919,6 +658,11 @@ func TestMapping_EachPayloadRef(t *testing.T) {
 }
 
 // @test-case TC3.7-each_empty_array
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_empty.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_empty.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_empty.yaml](testdata/tc37/events/tc37/events/tc375.each_empty.yaml)
 func TestMapping_EachEmptyArray(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -954,6 +698,11 @@ func TestMapping_EachEmptyArray(t *testing.T) {
 }
 
 // @test-case TC3.7-each_not_array
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_not_array.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_not_array.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_not_array.yaml](testdata/tc37/events/tc37/events/tc375.each_not_array.yaml)
 func TestMapping_EachNotArray(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -988,6 +737,11 @@ func TestMapping_EachNotArray(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // @test-case TC3.7-each_primitive
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_primitive.yaml](testdata/tc37/events/tc37/events/tc375.each_primitive.yaml)
 func TestMapping_EachPrimitive(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -1027,6 +781,11 @@ func TestMapping_EachPrimitive(t *testing.T) {
 }
 
 // @test-case TC3.7-each_primitive_with_type
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_with_type.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_with_type.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_primitive_with_type.yaml](testdata/tc37/events/tc37/events/tc375.each_primitive_with_type.yaml)
 func TestMapping_EachPrimitiveWithType(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -1066,6 +825,11 @@ func TestMapping_EachPrimitiveWithType(t *testing.T) {
 }
 
 // @test-case TC3.7-each_primitive_with_format
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_with_format.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_with_format.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_primitive_with_format.yaml](testdata/tc37/events/tc37/events/tc375.each_primitive_with_format.yaml)
 func TestMapping_EachPrimitiveWithFormat(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)
@@ -1104,6 +868,11 @@ func TestMapping_EachPrimitiveWithFormat(t *testing.T) {
 }
 
 // @test-case TC3.7-each_primitive_empty
+//
+// Config files:
+//   vendor config: [testdata/tc37/vendors/mapping_vendor/vendor.yaml](testdata/tc37/vendors/mapping_vendor/vendor.yaml)
+//   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_empty.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_empty.yaml)
+//   event schema:  [testdata/tc37/events/tc37/events/tc375.each_primitive_empty.yaml](testdata/tc37/events/tc37/events/tc375.each_primitive_empty.yaml)
 func TestMapping_EachPrimitiveEmpty(t *testing.T) {
 	projectRoot := getProjectRootMapping()
 	configDir := createMappingTestConfig(t)

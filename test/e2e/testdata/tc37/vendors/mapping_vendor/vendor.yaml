@@ -1,0 +1,17 @@
+vendor_id: "mapping_vendor"
+request:
+  method: POST
+  url: "http://localhost:19093/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+retry_policy:
+  max_attempts: 1
+  base_delay: 1s
+  max_delay: 5s
+  multiplier: 2.0
+  jitter: 0.2
+response_judgment:
+  success:
+    type: http_status
