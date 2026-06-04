@@ -1,8 +1,8 @@
-# IT1: ConfigLoader Degraded Startup + Interface Signature Change
+# IT1: ConfigLoader Partial Availability + Interface Signature Change
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox syntax.
 
-**Goal:** Convert ConfigProvider from `(*T, bool)` to `(*T, error)` with `LoadedValue[T]` error/value binding, implement degraded startup (single file errors don't abort the whole load), restructure route files from flat `route.yaml` to per-event `routes/{event}.yaml`, and add cross-config validation.
+**Goal:** Convert ConfigProvider from `(*T, bool)` to `(*T, error)` with `LoadedValue[T]` error/value binding, implement partial availability (single file errors don't abort the whole load), restructure route files from flat `route.yaml` to per-event `routes/{event}.yaml`, and add cross-config validation.
 
 **Architecture:** 
 - `ConfigProvider` interface changes signature on all 4 methods, propagating to Loader + consumers + mock
@@ -137,7 +137,7 @@ Add after `NewLoader`:
 ```go
 // recordError records a loading failure: stores the error in the appropriate
 // LoadedValue map entry, then logs it. It does NOT return the error — the
-// loader continues with degraded operation.
+// loader continues with partial availability.
 func (l *Loader) recordError(typ, scope, file string, err error) {
     l.mu.Lock()
     switch typ {
@@ -276,7 +276,7 @@ Expected: compiles (external callers not yet updated, but that's next task)
 
 ---
 
-### Task 3: Rewrite internal loading methods with degraded startup
+### Task 3: Rewrite internal loading methods with partial availability
 
 **Files:**
 - Modify: `internal/config/loader.go`

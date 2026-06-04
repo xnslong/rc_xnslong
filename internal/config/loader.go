@@ -127,7 +127,7 @@ func NewLoader(paths ...string) (*Loader, error) {
 
 // recordError records a loading failure: stores the error in the appropriate
 // LoadedValue map entry, then logs it. It does NOT return the error — the
-// loader continues with degraded operation.
+// loader continues with partial availability.
 func (l *Loader) recordError(typ, scope, file string, err error) {
 	l.mu.Lock()
 	switch typ {

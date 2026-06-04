@@ -7,7 +7,7 @@
 
 ## 背景：为什么需要 v3
 
-HLD §4.4 和 DD §9.4 明确规定了**配置加载的降级启动策略**：
+HLD §4.4 和 DD §9.4 明确规定了**配置加载的边界容错策略**：
 
 - 单个路由文件加载失败 → 仅该事件类型的路由规则不可用
 - 单个 Schema 文件加载失败 → 仅该事件类型的 Schema 不可用
@@ -33,7 +33,7 @@ HLD §4.4 和 DD §9.4 明确规定了**配置加载的降级启动策略**：
 
 ### 与 v2 计划的关系
 
-v2 IT3 已完成了配置目录分层加载和 Schema 从本地文件加载。v3 在此基础上进一步对齐 HLD/DD 的降级启动策略。
+v2 IT3 已完成了配置目录分层加载和 Schema 从本地文件加载。v3 在此基础上进一步对齐 HLD/DD 的边界容错策略。
 
 ---
 
@@ -41,7 +41,7 @@ v2 IT3 已完成了配置目录分层加载和 Schema 从本地文件加载。v3
 
 ### 为什么改
 
-在降级启动场景下，`GetVendorConfig("crm_system")` 返回 `false` 可能有两个原因：
+在边界容错场景下，`GetVendorConfig("crm_system")` 返回 `false` 可能有两个原因：
 
 | 原因 | 发生场景 | 运维响应 |
 |------|---------|---------|
@@ -142,9 +142,9 @@ func (l *Loader) GetVendorConfig(vendorID string) (*port.VendorConfig, error) {
 
 ## 迭代计划
 
-### Iteration 1: 加载器降级启动改造 + 接口签名变更
+### Iteration 1: 加载器边界容错改造 + 接口签名变更
 
-**目标**：将 Loader 改为可降级运行，ConfigProvider 接口签名从 `(*T, bool)` 改为 `(*T, error)`。
+**目标**：将 Loader 改为支持部分可用状态，ConfigProvider 接口签名从 `(*T, bool)` 改为 `(*T, error)`。
 
 | 改动项 | 文件 | 说明 |
 |--------|------|------|
@@ -170,9 +170,9 @@ go vet ./...
 
 ---
 
-### Iteration 2: 下游消费者适配降级行为
+### Iteration 2: 下游消费者适配边界容错行为
 
-**目标**：Worker、Ingestion 适配新的 `(*T, error)` 签名，补齐 Worker 缺失配置时更新 DB DEAD_LETTER 的缺陷，main.go 支持降级启动。
+**目标**：Worker、Ingestion 适配新的 `(*T, error)` 签名，补齐 Worker 缺失配置时更新 DB DEAD_LETTER 的缺陷，main.go 支持边界容错。
 
 | 改动项 | 文件 | 说明 |
 |--------|------|------|
@@ -180,7 +180,7 @@ go vet ./...
 | 2.2 Worker: DeliverySpec 缺失 → DEAD_LETTER | `internal/delivery/worker.go` | 同 2.1，统一处理 `err != nil` |
 | 2.3 Ingestion: 适配新签名 | `internal/ingestion/service.go` | `GetEventSchema` 的 `!ok` → `err != nil`，统一返回 `ErrEventNotFound`（含根因），不区分错误类型 |
 | 2.4 Router: 适配新签名 | `internal/routing/dispatcher.go` | `GetRoutingRules` 改为 `(*T, error)` 适配 |
-| 2.5 main.go: 降级启动 | `cmd/notification-server/main.go` | `Load()` 返回 nil 后直接启动（具体错误已在加载时逐条记录），不 `Fatalf` |
+| 2.5 main.go: 边界容错 | `cmd/notification-server/main.go` | `Load()` 返回 nil 后直接启动（具体错误已在加载时逐条记录），不 `Fatalf` |
 | 2.6 E2E suite: 适配新签名 | `test/e2e/suite.go` | 任何使用 ConfigProvider 的 suite 代码需适配 `(*T, error)` |
 | 2.7 Schema 校验缓存 | `internal/ingestion/validator.go` | `schemaValidator` 增加 `map[string]*schemaNode` cache，`GetEventSchema` 返回的 `map[string]any` 在首次使用时解析为 `schemaNode` 并缓存，后续复用；去掉每次校验的 `json.Unmarshal` |
 
@@ -213,7 +213,7 @@ go vet ./...
 
 ### Iteration 3: 测试覆盖
 
-**目标**：补充降级启动的测试覆盖，更新现有测试适配新接口。
+**目标**：补充边界容错的测试覆盖，更新现有测试适配新接口。
 
 | 改动项 | 文件 | 说明 |
 |--------|------|------|
@@ -221,8 +221,8 @@ go vet ./...
 | 3.2 添加部分失败场景测试 | `internal/config/loader_test.go` | 含无效 YAML vendor 的 testdata，验证 Load 返回 nil，该 vendor 的 `GetVendorConfig` 返回加载错误（`errors.Is(ErrNotConfigured) == false`） |
 | 3.3 添加路由文件加载失败场景测试 | `internal/config/loader_test.go` | 无效 routes/*.yaml → 该事件类型路由不可用，其他正常 |
 | 3.4 添加跨配置校验测试 | `internal/config/loader_test.go` | 路由引用不存在 vendor → validation error 记录，不影响启动 |
-| 3.5 更新 E2E TC4.1 | `test/e2e/config_test.go` | 改为验证**降级启动**：Load() 返回 nil，指定 vendor 的 `GetVendorConfig` 返回加载错误 |
-| 3.6 添加 E2E 降级启动集成测试 | `test/e2e/config_test.go` | 启动 server 时有 vendor 配置错误 → server 正常启动，该 vendor 投递 DEAD_LETTER，其他 vendor 正常送达 |
+| 3.5 更新 E2E TC4.1 | `test/e2e/config_test.go` | 改为验证**边界容错**：Load() 返回 nil，指定 vendor 的 `GetVendorConfig` 返回加载错误 |
+| 3.6 添加 E2E 边界容错集成测试 | `test/e2e/config_test.go` | 启动 server 时有 vendor 配置错误 → server 正常启动，该 vendor 投递 DEAD_LETTER，其他 vendor 正常送达 |
 | 3.7 更新 mapping_content_test.go | `test/e2e/mapping_content_test.go` | 若它使用了 ConfigProvider 的旧签名 |
 
 **验证**：
@@ -239,7 +239,7 @@ go vet ./...
 
 ```mermaid
 flowchart TD
-    IT1["IT1: 加载器降级启动改造\n+ 接口签名变更"]
+    IT1["IT1: 加载器边界容错改造\n+ 接口签名变更"]
     IT2["IT2: 下游消费者适配"]
     IT3["IT3: 测试覆盖"]
 
@@ -250,21 +250,21 @@ flowchart TD
 
 - **IT1** 是基础——接口签名变更影响所有消费者
 - **IT2** 下游适配依赖 IT1 的新签名和类型定义
-- **IT3** E2E 降级测试需 IT2 的 main.go 和 Worker 改动
+- **IT3** E2E 边界容错测试需 IT2 的 main.go 和 Worker 改动
 
 ## 文件变更清单
 
 | 文件 | 变更类型 | 预计新增/修改 |
 |------|---------|-------------|
 | `internal/port/config.go` | 修改 | 4 个方法签名改为 `(*T, error)` + `ErrNotConfigured` sentinel，约 +10 行 |
-| `internal/config/loader.go` | 大改 | +160 行 / -40 行（LoadedValue + 降级加载 + 校验） |
-| `cmd/notification-server/main.go` | 修改 | +15 行（降级启动处理 + `(*T, error)` 适配） |
+| `internal/config/loader.go` | 大改 | +160 行 / -40 行（LoadedValue + 边界容错加载 + 校验） |
+| `cmd/notification-server/main.go` | 修改 | +15 行（边界容错处理 + `(*T, error)` 适配） |
 | `internal/delivery/worker.go` | 修改 | +25 行（DEAD_LETTER + 精确区分错误类型） |
 | `internal/ingestion/service.go` | 修改 | +5 行（适配 `map[string]any` 签名） |
 | `internal/ingestion/validator.go` | 修改 | +20 行（schema cache，消除每次校验的 `json.Unmarshal`） |
 | `internal/routing/dispatcher.go` | 修改 | +5 行（适配新签名） |
 | `internal/config/loader_test.go` | 修改 | +100 行（3 个新测试 + 现有测试适配） |
-| `test/e2e/config_test.go` | 修改 | +70 行（E2E 降级测试） |
+| `test/e2e/config_test.go` | 修改 | +70 行（E2E 边界容错测试） |
 | `test/e2e/suite.go` | 修改 | +5 行（ConfigProvider 使用处适配） |
 | `CLAUDE.md` | 修改 | 更新 config 目录结构说明 |
 | 各类 testdata `route.yaml` | 修改 | `events/{biz}/route.yaml` → `events/{biz}/routes/{event}.yaml` 结构调整 |
@@ -291,7 +291,7 @@ routes:
   - vendor_id: "ad_platform"
 ```
 
-## 降级行为矩阵（运行时）
+## 边界容错行为矩阵（运行时）
 
 | 加载失败类型 | Ingestion | Router | Worker |
 |-------------|-----------|--------|--------|
@@ -305,7 +305,7 @@ routes:
 
 ### 为什么 Worker 的 Nack 行为需要改？
 
-当前代码中 `GetVendorConfig` 返回 false 时 Worker 只 `Nack(false,false)` 丢弃消息但不更新 DB。在"启动即全有全无"的模式下永远不会遇到缺失的 vendor——系统要么启动成功要么失败。但降级启动后 Worker 会实际遇到缺失配置，如果只 Nack 不更新 DB，delivery_task 永远停留在 DELIVERING，成为"僵尸"记录。
+当前代码中 `GetVendorConfig` 返回 false 时 Worker 只 `Nack(false,false)` 丢弃消息但不更新 DB。在"启动即全有全无"的模式下永远不会遇到缺失的 vendor——系统要么启动成功要么失败。但边界容错后 Worker 会实际遇到缺失配置，如果只 Nack 不更新 DB，delivery_task 永远停留在 DELIVERING，成为"僵尸"记录。
 
 ### 为什么不把 `(*T, bool)` → `(*T, error)` 放在单独的迭代？
 
@@ -320,4 +320,4 @@ routes:
 
 ### 为什么不需要 `IsDegraded()` 标记？
 
-`recordError` 在加载失败时已逐条输出结构化日志，`main.go` 无需额外检查降级状态。系统是否降级应由监控系统通过告警规则来感知，而非在代码中保留一个无消费者的状态位。
+`recordError` 在加载失败时已逐条输出结构化日志，`main.go` 无需额外检查部分可用状态。系统是否部分可用应由监控系统通过告警规则来感知，而非在代码中保留一个无消费者的状态位。

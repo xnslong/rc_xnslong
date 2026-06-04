@@ -15,8 +15,8 @@ import (
 )
 
 // @test-case TC4.1-invalid_config
-// Test 4.1: 无效配置降级启动
-func TestConfig_DegradedStartup(t *testing.T) {
+// Test 4.1: 无效配置边界容错
+func TestConfig_PartialAvailability(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create a valid event schema
