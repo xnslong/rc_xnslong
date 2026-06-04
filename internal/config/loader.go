@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/rs/zerolog/log"
 	"github.com/xnslong/rc_xnslong/internal/port"
 )
 
@@ -108,21 +108,47 @@ type Loader struct {
 	mu    sync.RWMutex
 	paths []string
 
-	// loaded state — populated by Load()
-	routingRules      []port.RoutingRule
-	vendorConfigs     map[string]*port.VendorConfig
-	deliveryContracts map[string]*deliveryContractFile // key: "vendorID/eventType"
-	eventSchemas      map[string][]byte                 // key: eventType
+	routingRules      map[string]*LoadedValue[[]*port.RoutingRule] // key: eventType
+	vendorConfigs     map[string]*LoadedValue[*port.VendorConfig]
+	deliveryContracts map[string]*LoadedValue[*deliveryContractFile] // key: "vendorID/eventType"
+	eventSchemas      map[string]*LoadedValue[map[string]any]        // key: eventType
 }
 
 // NewLoader creates a new config loader for the given config file or directory paths.
 func NewLoader(paths ...string) (*Loader, error) {
 	return &Loader{
 		paths:             paths,
-		vendorConfigs:     make(map[string]*port.VendorConfig),
-		deliveryContracts: make(map[string]*deliveryContractFile),
-		eventSchemas:      make(map[string][]byte),
+		routingRules:      make(map[string]*LoadedValue[[]*port.RoutingRule]),
+		vendorConfigs:     make(map[string]*LoadedValue[*port.VendorConfig]),
+		deliveryContracts: make(map[string]*LoadedValue[*deliveryContractFile]),
+		eventSchemas:      make(map[string]*LoadedValue[map[string]any]),
 	}, nil
+}
+
+// recordError records a loading failure: stores the error in the appropriate
+// LoadedValue map entry, then logs it. It does NOT return the error — the
+// loader continues with degraded operation.
+func (l *Loader) recordError(typ, scope, file string, err error) {
+	l.mu.Lock()
+	switch typ {
+	case "vendor":
+		l.vendorConfigs[scope] = &LoadedValue[*port.VendorConfig]{Error: err}
+	case "contract":
+		l.deliveryContracts[scope] = &LoadedValue[*deliveryContractFile]{Error: err}
+	case "schema":
+		l.eventSchemas[scope] = &LoadedValue[map[string]any]{Error: err}
+	case "route":
+		l.routingRules[scope] = &LoadedValue[[]*port.RoutingRule]{Error: err}
+	}
+	l.mu.Unlock()
+
+	log.Error().
+		Str("module", "config.loader").
+		Str("event", "load_"+typ+"_error").
+		Str("file", file).
+		Str("scope", scope).
+		Err(err).
+		Msg("config load failure")
 }
 
 // Load loads all configuration from the configured paths into memory.
@@ -232,12 +258,15 @@ func (l *Loader) loadBizRoute(path string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	for _, route := range file.Routes {
-		l.routingRules = append(l.routingRules, port.RoutingRule{
+	rules := make([]*port.RoutingRule, len(file.Routes))
+	for i, route := range file.Routes {
+		rules[i] = &port.RoutingRule{
 			EventType: file.EventType,
 			VendorID:  route.VendorID,
-		})
+		}
 	}
+
+	l.routingRules[file.EventType] = &LoadedValue[[]*port.RoutingRule]{Value: rules}
 
 	return nil
 }
@@ -319,7 +348,7 @@ func (l *Loader) loadVendorConfig(path string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.vendorConfigs[file.VendorID] = vendor
+	l.vendorConfigs[file.VendorID] = &LoadedValue[*port.VendorConfig]{Value: vendor}
 
 	return nil
 }
@@ -379,7 +408,7 @@ func (l *Loader) loadDeliveryContract(path, vendorID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.deliveryContracts[key] = &file
+	l.deliveryContracts[key] = &LoadedValue[*deliveryContractFile]{Value: &file}
 
 	return nil
 }
@@ -438,15 +467,10 @@ func (l *Loader) loadEventSchemaFile(path string) error {
 		return fmt.Errorf("invalid schema file %q: missing event_type or schema", path)
 	}
 
-	schemaJSON, err := json.Marshal(sf.Schema)
-	if err != nil {
-		return fmt.Errorf("marshaling schema %q: %w", path, err)
-	}
-
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.eventSchemas[sf.EventType] = schemaJSON
+	l.eventSchemas[sf.EventType] = &LoadedValue[map[string]any]{Value: sf.Schema}
 
 	return nil
 }
@@ -498,12 +522,15 @@ func convertResponseJudgment(rj *vendorResponseJudgment) port.ResponseJudgment {
 // ---- ConfigProvider implementation ----
 
 // GetVendorConfig returns the vendor configuration for the given vendor ID.
-func (l *Loader) GetVendorConfig(vendorID string) (*port.VendorConfig, bool) {
+func (l *Loader) GetVendorConfig(vendorID string) (*port.VendorConfig, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	v, ok := l.vendorConfigs[vendorID]
-	return v, ok
+	lv, ok := l.vendorConfigs[vendorID]
+	if !ok {
+		return nil, port.ErrNotConfigured
+	}
+	return lv.Value, lv.Error
 }
 
 // GetAllVendorIDs returns all known vendor IDs.
@@ -520,28 +547,32 @@ func (l *Loader) GetAllVendorIDs() []string {
 
 // GetDeliverySpec returns the delivery specification for the given vendor and event type.
 // Merges vendor request config with per-event delivery contract overrides.
-func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, bool) {
+func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	vendor, ok := l.vendorConfigs[vendorID]
+	vendorLV, ok := l.vendorConfigs[vendorID]
 	if !ok {
-		return nil, false
+		return nil, port.ErrNotConfigured
 	}
+	if vendorLV.Error != nil {
+		return nil, vendorLV.Error
+	}
+	vendor := vendorLV.Value
 
 	spec := &port.DeliverySpec{
 		Mapping: port.MappingConfig{
 			EventType: eventType,
+			Request:   vendor.Request,
 		},
 	}
 
-	// Start with vendor defaults.
-	spec.Mapping.Request = vendor.Request
-
-	// Override with delivery contract fields if a contract exists for this
-	// (vendor, event_type) pair.
 	contractKey := vendorID + "/" + eventType
-	if contract, ok := l.deliveryContracts[contractKey]; ok {
+	if contractLV, hasContract := l.deliveryContracts[contractKey]; hasContract {
+		if contractLV.Error != nil {
+			return nil, contractLV.Error
+		}
+		contract := contractLV.Value
 		if contract.Request.Method != "" {
 			spec.Mapping.Request.Method = contract.Request.Method
 		}
@@ -563,28 +594,34 @@ func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec
 		spec.Mapping.Body = vendor.Body
 	}
 
-	return spec, true
+	return spec, nil
 }
 
 // GetRoutingRules returns all routing rules matching the given event type.
-func (l *Loader) GetRoutingRules(eventType string) []port.RoutingRule {
+func (l *Loader) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	var result []port.RoutingRule
-	for _, rule := range l.routingRules {
-		if rule.EventType == eventType {
-			result = append(result, rule)
-		}
+	lv, ok := l.routingRules[eventType]
+	if !ok {
+		return nil, port.ErrNotConfigured
 	}
-	return result
+	// Convert []*port.RoutingRule → []port.RoutingRule
+	rules := make([]port.RoutingRule, len(lv.Value))
+	for i, r := range lv.Value {
+		rules[i] = *r
+	}
+	return rules, lv.Error
 }
 
-// GetEventSchema returns the JSON schema definition for the given event type.
-func (l *Loader) GetEventSchema(eventType string) ([]byte, bool) {
+// GetEventSchema returns the event schema for the given event type.
+func (l *Loader) GetEventSchema(eventType string) (map[string]any, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	schema, ok := l.eventSchemas[eventType]
-	return schema, ok
+	lv, ok := l.eventSchemas[eventType]
+	if !ok {
+		return nil, port.ErrNotConfigured
+	}
+	return lv.Value, lv.Error
 }
