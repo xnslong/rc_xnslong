@@ -152,6 +152,80 @@ info "报告已生成: ${REPORT_DIR}/${REPORT_BASENAME}.md"
 info "日志已保存: ${REPORT_DIR}/${REPORT_BASENAME}.log"
 info "摘要已保存: ${REPORT_DIR}/${REPORT_BASENAME}.summary"
 
+# ---- 6. 更新测试用例文档 ----
+DOC_FILE="${PROJECT_ROOT}/docs/notification-test-cases.md"
+CURRENT_HASH=$(git -C "${PROJECT_ROOT}" log -1 --format="%h" 2>/dev/null || echo "unknown")
+CURRENT_DATE=$(date '+%Y-%m-%d')
+
+if [ -f "${DOC_FILE}" ]; then
+    info "更新测试用例文档..."
+
+    # 用 Python 解析日志，更新文档中的状态标记
+    python3 -c "
+import re, sys
+
+log_file = '${REPORT_DIR}/${REPORT_BASENAME}.log'
+doc_file = '${DOC_FILE}'
+new_hash = '${CURRENT_HASH}'
+new_date = '${CURRENT_DATE}'
+
+# 从日志提取所有 TC 子测试的 PASS/FAIL 结果
+tc_results = {}  # tc_id -> 'pass' or 'fail'
+
+with open(log_file, 'r') as f:
+    for line in f:
+        m = re.search(r'--- (PASS|FAIL):.*?/(TC[\d.]+[-a-zA-Z_]+)', line)
+        if m:
+            tc_results[m.group(2)] = m.group(1).lower()
+
+# 也处理没有 t.Run 的顶层测试 (通过 @test-case 注释匹配)
+import glob, os
+for tf in glob.glob(os.path.join('${PROJECT_ROOT}/test/e2e/', '*_test.go')):
+    with open(tf, 'r') as f:
+        content = f.read()
+    for m in re.finditer(r'@test-case (TC[\d.]+[-a-zA-Z_]*)', content):
+        tc_id = m.group(1)
+        if tc_id not in tc_results:
+            # 找下一个 func Test
+            pos = m.end()
+            rest = content[pos:pos+200]
+            fm = re.search(r'func (Test\w+)\(', rest)
+            if fm:
+                test_name = fm.group(1)
+                with open(log_file, 'r') as lf:
+                    for ll in lf:
+                        tcm = re.match(r'--- (PASS|FAIL): ' + test_name + r' ', ll)
+                        if tcm:
+                            tc_results[tc_id] = tcm.group(1).lower()
+                            break
+
+# 更新文档
+with open(doc_file, 'r') as f:
+    doc_lines = f.readlines()
+
+updated = 0
+for i, line in enumerate(doc_lines):
+    for tc_id, result in tc_results.items():
+        if line.startswith('| ' + tc_id + ' '):
+            # 替换行尾的状态标记: | PASS/FAIL hash (date) |
+            icon = '✅' if result == 'pass' else '🔴'
+            doc_lines[i] = re.sub(
+                r'\| [✅🔴] [-a-z0-9]+ \([0-9-]+\) \|$',
+                f'| {icon} {new_hash} ({new_date}) |',
+                line
+            )
+            updated += 1
+            break
+
+with open(doc_file, 'w') as f:
+    f.writelines(doc_lines)
+
+print(f'updated {updated} test cases')
+" 2>&1 || info "更新失败（跳过）"
+
+    info "测试用例文档已更新"
+fi
+
 # ---- 结果 ----
 if [ ${E2E_EXIT_CODE} -eq 0 ]; then
     info "✅ 所有 ${PASS_COUNT} 个测试通过"
