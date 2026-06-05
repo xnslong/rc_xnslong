@@ -1,0 +1,3 @@
+event_type: "order.network_unreachable"
+schema:
+  type: object

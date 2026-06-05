@@ -133,7 +133,7 @@ TC1.2-test1                ❌ 坏：无意义
 | 用例号 | 步骤 | 预期 | 状态 |
 |--------|------|------|------|
 | TC3.5-retry_exhausted | vendor 持续返回 503（retryable），max_attempts=3<br>① POST 通知<br>② 等待投递完成 | vendor 被调用 max_attempts 次，通知状态最终为 "FAILED"，重试间隔递增（约 2s、4s） | ✅ 29bab87 (2026-06-05) |
-| TC3.5-network_unreachable | vendor 地址连接拒绝<br>① POST 通知<br>② 等待投递完成 | 同可重试失败处理，最终状态 FAILED | 🔴 29bab87 (2026-06-05) |
+| TC3.5-network_unreachable | vendor 地址连接拒绝<br>① POST 通知<br>② 等待投递完成 | 同可重试失败处理，最终状态 FAILED | ✅ 29bab87 (2026-06-05) |
 
 ### 3.6 部分成功
 
@@ -149,21 +149,21 @@ TC1.2-test1                ❌ 坏：无意义
 
 | 用例号 | 步骤 | 预期 | 状态 |
 |--------|------|------|------|
-| TC3.7-pure_field_ref | payload: `{order_id: "123"}`<br>模板: `@{payload:order_id}` | vendor body: `"123"` | 🔴 29bab87 (2026-06-05) |
-| TC3.7-nested_path | payload: `{a: {b: {c: "v"}}}`<br>模板: `@{payload:a.b.c}` | vendor body: `"v"` | 🔴 29bab87 (2026-06-05) |
-| TC3.7-missing_field | payload: `{}`<br>模板: `@{payload:missing}` | vendor body: `null`（纯引用返回 nil） | 🔴 29bab87 (2026-06-05) |
-| TC3.7-non_map_intermediate | payload: `{a: "string"}`<br>模板: `@{payload:a.b}` | vendor body: `null`（中间路径非 map 时返回 nil） | 🔴 29bab87 (2026-06-05) |
-| TC3.7-static_template | payload: 任意<br>模板: `static-value` | vendor body: `"static-value"` | 🔴 29bab87 (2026-06-05) |
-| TC3.7-mixed_template | payload: `{id: 123}`<br>模板: `user-@{payload:id}` | vendor body: `"user-123"` | 🔴 29bab87 (2026-06-05) |
+| TC3.7-pure_field_ref | payload: `{order_id: "123"}`<br>模板: `@{payload:order_id}` | vendor body: `"123"` | ✅ 29bab87 (2026-06-05) |
+| TC3.7-nested_path | payload: `{a: {b: {c: "v"}}}`<br>模板: `@{payload:a.b.c}` | vendor body: `"v"` | ✅ 29bab87 (2026-06-05) |
+| TC3.7-missing_field | payload: `{}`<br>模板: `@{payload:missing}` | vendor body: `null`（纯引用返回 nil） | ✅ 29bab87 (2026-06-05) |
+| TC3.7-non_map_intermediate | payload: `{a: "string"}`<br>模板: `@{payload:a.b}` | vendor body: `null`（中间路径非 map 时返回 nil） | ✅ 29bab87 (2026-06-05) |
+| TC3.7-static_template | payload: 任意<br>模板: `static-value` | vendor body: `"static-value"` | ✅ 29bab87 (2026-06-05) |
+| TC3.7-mixed_template | payload: `{id: 123}`<br>模板: `user-@{payload:id}` | vendor body: `"user-123"` | ✅ 29bab87 (2026-06-05) |
 
 #### 3.7.2 `$source` — 原始类型保持
 
 | 用例号 | 步骤 | 预期 | 状态 |
 |--------|------|------|------|
-| TC3.7-source_integer | payload: `{count: 42}`<br>模板: `$source: "@{payload:count}"` | vendor body: `42`（保持 integer） | 🔴 29bab87 (2026-06-05) |
-| TC3.7-source_boolean | payload: `{active: true}`<br>模板: `$source: "@{payload:active}"` | vendor body: `true`（保持 boolean） | 🔴 29bab87 (2026-06-05) |
-| TC3.7-source_null | payload: `{note: null}`<br>模板: `$source: "@{payload:note}"` | vendor body: `null`（保持 null） | 🔴 29bab87 (2026-06-05) |
-| TC3.7-source_prefix_suffix | payload: `{id: 42}`<br>模板: `$source: "id_@{payload:id}"` | vendor body: `"id_42"`（string） | 🔴 29bab87 (2026-06-05) |
+| TC3.7-source_integer | payload: `{count: 42}`<br>模板: `$source: "@{payload:count}"` | vendor body: `42`（保持 integer） | ✅ 29bab87 (2026-06-05) |
+| TC3.7-source_boolean | payload: `{active: true}`<br>模板: `$source: "@{payload:active}"` | vendor body: `true`（保持 boolean） | ✅ 29bab87 (2026-06-05) |
+| TC3.7-source_null | payload: `{note: null}`<br>模板: `$source: "@{payload:note}"` | vendor body: `null`（保持 null） | ✅ 29bab87 (2026-06-05) |
+| TC3.7-source_prefix_suffix | payload: `{id: 42}`<br>模板: `$source: "id_@{payload:id}"` | vendor body: `"id_42"`（string） | ✅ 29bab87 (2026-06-05) |
 
 #### 3.7.3 `$type` — 强制类型转换
 
@@ -217,5 +217,5 @@ TC1.2-test1                ❌ 坏：无意义
 
 | 用例号 | 步骤 | 预期 | 状态 |
 |--------|------|------|------|
-| TC5.1-wait_delivery | ① vendor 注册 200，延迟 5s 回复（max_attempts=1）<br>② POST 通知<br>③ 等待 vendor 收到请求<br>④ 发送 SIGTERM<br>⑤ 重启服务<br>⑥ GET 通知状态 | 进程退出耗时 2s~8s，通知状态 SUCCEEDED，vendor 仅 1 次调用 | 🔴 29bab87 (2026-06-05) |
-| TC5.2-retry_on_sigterm | ① vendor 注册 [503（延迟 3s）, 200]（max_attempts=3）<br>② POST 通知<br>③ 等待 vendor 收到第 1 次请求<br>④ 发送 SIGTERM<br>⑤ 退出后重启服务<br>⑥ 等待重试完成（60s 超时） | 状态最终变为 SUCCEEDED，vendor 至少收到 1 次重试请求 | 🔴 29bab87 (2026-06-05) |
+| TC5.1-wait_delivery | ① vendor 注册 200，延迟 5s 回复（max_attempts=1）<br>② POST 通知<br>③ 等待 vendor 收到请求<br>④ 发送 SIGTERM<br>⑤ 重启服务<br>⑥ GET 通知状态 | 进程退出耗时 2s~8s，通知状态 SUCCEEDED，vendor 仅 1 次调用 | ✅ 29bab87 (2026-06-05) |
+| TC5.2-retry_on_sigterm | ① vendor 注册 [503（延迟 3s）, 200]（max_attempts=3）<br>② POST 通知<br>③ 等待 vendor 收到第 1 次请求<br>④ 发送 SIGTERM<br>⑤ 退出后重启服务<br>⑥ 等待重试完成（60s 超时） | 状态最终变为 SUCCEEDED，vendor 至少收到 1 次重试请求 | ✅ 29bab87 (2026-06-05) |

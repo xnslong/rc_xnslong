@@ -23,66 +23,6 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-// createShutdownConfig creates a temporary config directory for shutdown tests
-// with a single vendor and routing rule for "order.paid".
-func createShutdownConfig(t *testing.T, vendorID, port string, maxAttempts int) string {
-	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "e2e-shutdown-*")
-	require.NoError(t, err)
-
-	vendorsDir := filepath.Join(tmpDir, "vendors")
-	require.NoError(t, os.MkdirAll(vendorsDir, 0755))
-
-	vendorYAML := fmt.Sprintf(`vendor_id: "%s"
-request:
-  method: POST
-  url: "http://localhost%s/api/notify"
-  headers:
-    Content-Type: "application/json"
-  body:
-    type: mapping
-retry_policy:
-  max_attempts: %d
-  base_delay: 1s
-  max_delay: 5s
-  multiplier: 2.0
-  jitter: 0.2
-response_judgment:
-  success:
-    type: http_status
-`, vendorID, port, maxAttempts)
-	require.NoError(t, os.WriteFile(filepath.Join(vendorsDir, vendorID+".yaml"), []byte(vendorYAML), 0644))
-
-	routingYAML := fmt.Sprintf(`rules:
-  - event_type: "order.paid"
-    vendor_id: "%s"
-`, vendorID)
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "routing_rules.yaml"), []byte(routingYAML), 0644))
-
-	// Create schema file needed by seedEventSchemas
-	schemasDir := filepath.Join(tmpDir, "event_schemas")
-	require.NoError(t, os.MkdirAll(schemasDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(schemasDir, "order.paid.yaml"), []byte(
-`event_type: "order.paid"
-schema:
-  type: object
-  required: [order_id, user_id, amount, currency]
-  properties:
-    order_id:
-      type: string
-    user_id:
-      type: string
-    amount:
-      type: integer
-      minimum: 0
-    currency:
-      type: string
-      enum: [CNY, USD, EUR]
-`), 0644))
-
-	return tmpDir
-}
-
 // startServer starts the notification-server binary as a subprocess and waits
 // for its health endpoint. It does NOT clean MQ topology, preserving any
 // existing queues and messages (e.g. retry messages).
@@ -182,11 +122,10 @@ func getProjectRoot() string {
 // Vendor responds with 200 after 5s delay → server should wait for it.
 func TestShutdown_WaitDelivery(t *testing.T) {
 	projectRoot := getProjectRoot()
-	tmpDir := createShutdownConfig(t, "sd-wait-vendor", ":19101", 1)
-	defer os.RemoveAll(tmpDir)
+	configDir := getTestdataDir("tc5_wait_delivery")
 
 	// SetupSuiteWithConfig starts the MockVendor on :19101 automatically
-	suite, err := e2e.SetupSuiteWithConfig(tmpDir, projectRoot, []string{"sd-wait-vendor"})
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"sd-wait-vendor"})
 	require.NoError(t, err)
 
 	// Configure delayed 200 (3s) — simulate slow vendor.
@@ -244,11 +183,10 @@ func TestShutdown_WaitDelivery(t *testing.T) {
 // SIGTERM during first delivery attempt; after restart the retry completes successfully.
 func TestShutdown_RetryOnSigterm(t *testing.T) {
 	projectRoot := getProjectRoot()
-	tmpDir := createShutdownConfig(t, "sd-retry-vendor", ":19102", 3)
-	defer os.RemoveAll(tmpDir)
+	configDir := getTestdataDir("tc5_retry_on_sigterm")
 
 	// SetupSuiteWithConfig starts the MockVendor on :19102 automatically
-	suite, err := e2e.SetupSuiteWithConfig(tmpDir, projectRoot, []string{"sd-retry-vendor"})
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"sd-retry-vendor"})
 	require.NoError(t, err)
 	mv := suite.MockVendors["sd-retry-vendor"]
 
@@ -288,7 +226,7 @@ func TestShutdown_RetryOnSigterm(t *testing.T) {
 	// Restart the server with the same config.
 	// The retry message is in the retry queue; the new server connects to the
 	// same MQ without deleting queues and will consume the retry.
-	serverCmd := startServer(t, tmpDir, projectRoot, ":8080",
+	serverCmd := startServer(t, configDir, projectRoot, ":8080",
 		"postgres://notify:notify@localhost:5432/notification?sslmode=disable",
 		"amqp://notify:notify@localhost:5672/",
 	)

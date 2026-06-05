@@ -1,0 +1,4 @@
+event_type: "order.paid"
+routes:
+  - vendor_id: "good_vendor"
+  - vendor_id: "bad_vendor"

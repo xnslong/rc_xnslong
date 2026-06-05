@@ -1,0 +1,8 @@
+event_type: "order.network_unreachable"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping

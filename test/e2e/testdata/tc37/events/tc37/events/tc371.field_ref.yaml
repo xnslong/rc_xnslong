@@ -22,3 +22,6 @@ schema:
     id:
       type: integer
       description: "用户 ID"
+    missing:
+      type: string
+      description: "paylaod 中不存在的字段，用于测试缺失字段返回 null"

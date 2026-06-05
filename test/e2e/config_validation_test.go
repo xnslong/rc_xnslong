@@ -1,7 +1,8 @@
 package e2e_test
 
 import (
-	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -50,7 +51,8 @@ func TestConfig_TemplateFieldValidation(t *testing.T) {
 		"notification should be FAILED because the contract references an undeclared field")
 }
 
-// getProjectRootConfig returns the project root.
+// getProjectRootConfig returns the project root from the test file location.
 func getProjectRootConfig() string {
-	return os.Getenv("PROJECT_ROOT")
+	_, filename, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(filename), "..", "..")
 }

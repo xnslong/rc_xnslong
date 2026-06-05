@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -223,50 +221,10 @@ func TestFullChain_RetryExhaustedToDeadLetter(t *testing.T) {
 // Vendor address unreachable → treated as retryable, eventually FAILED
 func TestFullChain_NetworkUnreachable(t *testing.T) {
 	projectRoot := getProjectRoot()
-	tmpDir, err := os.MkdirTemp("", "e2e-unreachable-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create vendor config pointing to an unlistened port
-	vendorsDir := filepath.Join(tmpDir, "vendors")
-	require.NoError(t, os.MkdirAll(vendorsDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(vendorsDir, "unreachable_vendor.yaml"), []byte(`
-vendor_id: "unreachable_vendor"
-request:
-  method: POST
-  url: "http://localhost:19999/api/notify"
-  headers:
-    Content-Type: "application/json"
-  body:
-    type: mapping
-retry_policy:
-  max_attempts: 3
-  base_delay: 1s
-  max_delay: 5s
-  multiplier: 2.0
-  jitter: 0.2
-response_judgment:
-  success:
-    type: http_status
-`), 0644))
-
-	// Create routing rule
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "routing_rules.yaml"), []byte(`
-rules:
-  - event_type: "order.network_unreachable"
-    vendor_id: "unreachable_vendor"
-`), 0644))
-
-		// Create schema file
-		schemasDir := filepath.Join(tmpDir, "event_schemas")
-		require.NoError(t, os.MkdirAll(schemasDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(schemasDir, "order.network_unreachable.yaml"), []byte(`event_type: "order.network_unreachable"
-schema:
-  type: object
-`), 0644))
+	configDir := getTestdataDir("tc35_unreachable")
 
 	// Setup server with this config dir, no mock vendors needed (unreachable)
-	suite, err := e2e.SetupSuiteWithConfig(tmpDir, projectRoot, nil)
+	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, nil)
 	require.NoError(t, err)
 	defer suite.TearDownSuite()
 
