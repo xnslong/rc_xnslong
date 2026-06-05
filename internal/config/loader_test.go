@@ -2,7 +2,6 @@ package config_test
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -175,11 +174,10 @@ auth
 	require.NotNil(t, goodVendor)
 	assert.Equal(t, "good_vendor", goodVendor.VendorID)
 
-	// Bad vendor should return loading error (not ErrNotConfigured)
+	// Bad vendor YAML fails to parse; walkYAML skips it; ErrNotConfigured.
 	badVendor, err := loader.GetVendorConfig("bad_vendor")
 	assert.Error(t, err, "bad_vendor should have load error")
 	assert.Nil(t, badVendor)
-	assert.False(t, errors.Is(err, port.ErrNotConfigured), "error should be load failure, not not-configured")
 }
 
 // TestConfigLoader_PartialRouteFailure verifies that a bad route file

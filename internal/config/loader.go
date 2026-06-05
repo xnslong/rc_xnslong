@@ -45,11 +45,11 @@ type vendorRetryFile struct {
 // This file only contains vendor-level settings that are independent
 // of any specific event type.
 type vendorConfigFile struct {
-	VendorID        string                   `yaml:"vendor_id"`
-	BaseURL         string                   `yaml:"base_url"`
-	Auth            *vendorAuthFile           `yaml:"auth"`
-	RetryPolicy     vendorRetryFile           `yaml:"retry_policy"`
-	ResponseJudgment *vendorResponseJudgment  `yaml:"response_judgment"`
+	VendorID         string                  `yaml:"vendor_id"`
+	BaseURL          string                  `yaml:"base_url"`
+	Auth             *vendorAuthFile         `yaml:"auth"`
+	RetryPolicy      vendorRetryFile         `yaml:"retry_policy"`
+	ResponseJudgment *vendorResponseJudgment `yaml:"response_judgment"`
 }
 
 // deliveryContractFile is the YAML representation of a delivery contract
@@ -107,17 +107,17 @@ type Loader struct {
 	mu    sync.RWMutex
 	paths []string
 
-	routingRules      map[string]*LoadedValue[[]*port.RoutingRule] // key: eventType
+	routingRules      map[string]*LoadedValue[[]port.RoutingRule] // key: eventType
 	vendorConfigs     map[string]*LoadedValue[*port.VendorConfig]
 	deliveryContracts map[string]*LoadedValue[*port.DeliverySpec] // key: "vendorID/eventType"
-	eventSchemas      map[string]*LoadedValue[map[string]any]        // key: eventType
+	eventSchemas      map[string]*LoadedValue[map[string]any]     // key: eventType
 }
 
 // NewLoader creates a new config loader for the given config file or directory paths.
 func NewLoader(paths ...string) (*Loader, error) {
 	return &Loader{
 		paths:             paths,
-		routingRules:      make(map[string]*LoadedValue[[]*port.RoutingRule]),
+		routingRules:      make(map[string]*LoadedValue[[]port.RoutingRule]),
 		vendorConfigs:     make(map[string]*LoadedValue[*port.VendorConfig]),
 		deliveryContracts: make(map[string]*LoadedValue[*port.DeliverySpec]),
 		eventSchemas:      make(map[string]*LoadedValue[map[string]any]),
@@ -137,7 +137,7 @@ func (l *Loader) recordError(typ, scope, file string, err error) {
 	case "schema":
 		l.eventSchemas[scope] = &LoadedValue[map[string]any]{Error: err}
 	case "route":
-		l.routingRules[scope] = &LoadedValue[[]*port.RoutingRule]{Error: err}
+		l.routingRules[scope] = &LoadedValue[[]port.RoutingRule]{Error: err}
 	}
 	l.mu.Unlock()
 
@@ -148,6 +148,111 @@ func (l *Loader) recordError(typ, scope, file string, err error) {
 		Str("scope", scope).
 		Err(err).
 		Msg("config load failure")
+}
+
+// ---- YAML template walker ----
+
+// yamlSeg is a parsed segment of a path template.
+type yamlSeg struct {
+	isVar   bool
+	name    string
+	fileExt string
+}
+
+// parseYAMLTemplate parses a template like "{biz}/routes/{event}.yaml".
+func parseYAMLTemplate(tmpl string) []yamlSeg {
+	parts := strings.Split(tmpl, "/")
+	segs := make([]yamlSeg, len(parts))
+	for i, part := range parts {
+		if brace := strings.IndexByte(part, '{'); brace >= 0 {
+			closeB := strings.IndexByte(part, '}')
+			segs[i] = yamlSeg{isVar: true, name: part[brace+1 : closeB], fileExt: part[closeB+1:]}
+		} else {
+			segs[i] = yamlSeg{isVar: false, name: part}
+		}
+	}
+	return segs
+}
+
+// walkYAML walks a path template relative to rootDir, finds all matching
+// .yaml files, parses each into T, and calls fn for each.
+func walkYAML[T any](l *Loader, rootDir, tmpl, typ string, fn func(T, string, map[string]string, error)) {
+	segs := parseYAMLTemplate(tmpl)
+	walkYAMLAt[T](l, rootDir, segs, 0, typ, map[string]string{}, fn)
+}
+
+func walkYAMLAt[T any](l *Loader, dir string, segs []yamlSeg, idx int, typ string,
+	vars map[string]string, fn func(T, string, map[string]string, error)) {
+	if idx >= len(segs) {
+		return
+	}
+	seg := segs[idx]
+	isLast := idx == len(segs)-1
+
+	if isLast {
+		if seg.isVar {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				return
+			}
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), seg.fileExt) {
+					continue
+				}
+				v := copyMap(vars)
+				v[seg.name] = strings.TrimSuffix(e.Name(), seg.fileExt)
+				parseYAMLFileAt[T](l, filepath.Join(dir, e.Name()), typ, v, fn)
+			}
+		} else {
+			parseYAMLFileAt[T](l, filepath.Join(dir, seg.name), typ, vars, fn)
+		}
+		return
+	}
+
+	if seg.isVar {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			v := copyMap(vars)
+			v[seg.name] = e.Name()
+			walkYAMLAt[T](l, filepath.Join(dir, e.Name()), segs, idx+1, typ, v, fn)
+		}
+	} else {
+		subDir := filepath.Join(dir, seg.name)
+		if !existsAndIsDir(subDir) {
+			return
+		}
+		walkYAMLAt[T](l, subDir, segs, idx+1, typ, vars, fn)
+	}
+}
+
+func parseYAMLFileAt[T any](l *Loader, path, typ string, vars map[string]string, fn func(T, string, map[string]string, error)) {
+	var val T
+	data, err := os.ReadFile(path)
+	if err != nil {
+		var zero T
+		fn(zero, path, vars, fmt.Errorf("reading file: %w", err))
+		return
+	}
+	if err := yaml.Unmarshal(data, &val); err != nil {
+		var zero T
+		fn(zero, path, vars, fmt.Errorf("parsing YAML: %w", err))
+		return
+	}
+	fn(val, path, vars, nil)
+}
+
+func copyMap(m map[string]string) map[string]string {
+	r := make(map[string]string, len(m))
+	for k, v := range m {
+		r[k] = v
+	}
+	return r
 }
 
 // Load loads all configuration from the configured paths into memory.
@@ -163,7 +268,6 @@ func (l *Loader) Load(ctx context.Context) error {
 				return err
 			}
 		} else {
-			l.loadFile(path)
 		}
 	}
 
@@ -197,332 +301,123 @@ func (l *Loader) loadDir(dir string) error {
 	}
 
 	if eventsExist {
-		l.loadRoutesFromEventsDir(eventsDir)
-		l.loadHierarchicalEventSchemas(eventsDir)
+		walkYAML[routesFile](l, eventsDir, "{biz}/routes/{event}.yaml", "route",
+			func(file routesFile, path string, vars map[string]string, err error) {
+				if err != nil {
+					l.recordError("route", path, path, err)
+					return
+				}
+				if file.EventType == "" {
+					l.recordError("route", path, path, fmt.Errorf("missing event_type"))
+					return
+				}
+				var rules []port.RoutingRule
+				for _, item := range file.Routes {
+					rules = append(rules, port.RoutingRule{EventType: file.EventType, VendorID: item.VendorID})
+				}
+				l.routingRules[file.EventType] = &LoadedValue[[]port.RoutingRule]{Value: rules}
+			})
+		walkYAML[eventSchemaFile](l, eventsDir, "{biz}/events/{event}.yaml", "schema",
+			func(sf eventSchemaFile, path string, vars map[string]string, err error) {
+				if err != nil {
+					l.recordError("schema", path, path, err)
+					return
+				}
+				if sf.EventType == "" || sf.Schema == nil {
+					l.recordError("schema", path, path, fmt.Errorf("missing event_type or schema"))
+					return
+				}
+				l.eventSchemas[sf.EventType] = &LoadedValue[map[string]any]{Value: sf.Schema}
+			})
 	}
 	if vendorsExist {
-		l.loadVendorsDir(vendorsDir)
+		walkYAML[vendorConfigFile](l, vendorsDir, "{vendor}/vendor.yaml", "vendor",
+			func(file vendorConfigFile, path string, vars map[string]string, err error) {
+				if err != nil {
+					vendorID := vars["vendor"]
+					l.recordError("vendor", vendorID, path, err)
+					return
+				}
+				vendorID := vars["vendor"]
+				baseDelayMs, err := parseDurationToMs(file.RetryPolicy.BaseDelay)
+				if err != nil {
+					l.recordError("vendor", vendorID, path, fmt.Errorf("parsing base_delay: %w", err))
+					return
+				}
+				maxDelayMs, err := parseDurationToMs(file.RetryPolicy.MaxDelay)
+				if err != nil {
+					l.recordError("vendor", vendorID, path, fmt.Errorf("parsing max_delay: %w", err))
+					return
+				}
+				vendor := &port.VendorConfig{
+					VendorID: vendorID,
+					BaseURL:  file.BaseURL,
+					Retry: port.RetryPolicy{
+						MaxAttempts: file.RetryPolicy.MaxAttempts,
+						BaseDelayMs: baseDelayMs,
+						MaxDelayMs:  maxDelayMs,
+						Multiplier:  file.RetryPolicy.Multiplier,
+						Jitter:      file.RetryPolicy.Jitter,
+					},
+					Judgment: convertResponseJudgment(file.ResponseJudgment),
+				}
+				if file.Auth != nil {
+					vendor.Auth = &port.AuthConfig{
+						Type:   file.Auth.Type,
+						Config: file.Auth.Config,
+					}
+				}
+				l.vendorConfigs[vendorID] = &LoadedValue[*port.VendorConfig]{Value: vendor}
+			})
+		walkYAML[deliveryContractFile](l, vendorsDir, "{vendor}/{biz}/{event}.yaml", "contract",
+			func(file deliveryContractFile, path string, vars map[string]string, err error) {
+				if err != nil {
+					l.recordError("contract", vars["vendor"]+"/"+filepath.Base(path), path, err)
+					return
+				}
+				vendorID := vars["vendor"]
+				eventType := file.EventType
+				if eventType == "" {
+					eventType = vars["event"]
+				}
+				scope := vendorID + "/" + filepath.Base(path)
+				spec := &port.DeliverySpec{
+					Mapping: port.MappingConfig{
+						EventType: eventType,
+						Request: port.RequestConfig{
+							Method:  file.Request.Method,
+							Path:    file.Request.Path,
+							Headers: file.Request.Headers,
+						},
+						Body: port.BodyConfig{
+							Type:     file.Request.Body.Type,
+							Template: file.Request.Body.Template,
+						},
+					},
+				}
+				if file.RetryPolicy != nil {
+					retry, err := convertVendorRetryFile(file.RetryPolicy)
+					if err != nil {
+						l.recordError("contract", scope, path, fmt.Errorf("contract retry_policy: %w", err))
+						return
+					}
+					spec.Retry = retry
+				}
+				key := vendorID + "/" + eventType
+				l.deliveryContracts[key] = &LoadedValue[*port.DeliverySpec]{Value: spec}
+			})
 	}
-
 	return nil
 }
 
-// loadFile loads a single YAML file, determining its type from the filename.
-func (l *Loader) loadFile(path string) error {
-	base := filepath.Base(path)
-	switch base {
-	case "vendor.yaml":
-		l.loadVendorConfig(path)
-		return nil
-	default:
-		return fmt.Errorf("unknown config file type: %s", base)
-	}
-}
 
-// ---- Routing rules ----
 
-// loadRoutesFromEventsDir scans events/{biz}/routes/*.yaml for each biz.
-func (l *Loader) loadRoutesFromEventsDir(eventsDir string) {
-	bizEntries, err := os.ReadDir(eventsDir)
-	if err != nil {
-		l.recordError("route", "events", eventsDir, fmt.Errorf("reading events dir: %w", err))
-		return
-	}
 
-	for _, bizEntry := range bizEntries {
-		if !bizEntry.IsDir() {
-			continue
-		}
 
-		routesDir := filepath.Join(eventsDir, bizEntry.Name(), "routes")
-		if !existsAndIsDir(routesDir) {
-			continue
-		}
 
-		routeEntries, err := os.ReadDir(routesDir)
-		if err != nil {
-			l.recordError("route", "biz:"+bizEntry.Name(), routesDir,
-				fmt.Errorf("reading routes dir: %w", err))
-			continue
-		}
 
-		for _, re := range routeEntries {
-			if re.IsDir() || !strings.HasSuffix(re.Name(), ".yaml") {
-				continue
-			}
-			l.loadBizRoute(filepath.Join(routesDir, re.Name()))
-		}
-	}
-}
 
-// loadBizRoute parses an events/{biz}/routes/*.yaml file.
-func (l *Loader) loadBizRoute(path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		l.recordError("route", path, path, fmt.Errorf("reading file: %w", err))
-		return
-	}
 
-	var file routesFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
-		l.recordError("route", path, path, fmt.Errorf("parsing YAML: %w", err))
-		return
-	}
-
-	if file.EventType == "" {
-		l.recordError("route", path, path, fmt.Errorf("missing event_type"))
-		return
-	}
-
-	var rules []*port.RoutingRule
-	for _, item := range file.Routes {
-		rules = append(rules, &port.RoutingRule{
-			EventType: file.EventType,
-			VendorID:  item.VendorID,
-		})
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.routingRules[file.EventType] = &LoadedValue[[]*port.RoutingRule]{Value: rules}
-}
-
-// ---- Vendor configs ----
-
-// loadVendorsDir scans vendors/{vendor}/vendor.yaml and delivery contracts.
-func (l *Loader) loadVendorsDir(vendorsDir string) {
-	vendorEntries, err := os.ReadDir(vendorsDir)
-	if err != nil {
-		l.recordError("vendor", "vendors", vendorsDir,
-			fmt.Errorf("reading vendors dir: %w", err))
-		return
-	}
-
-	for _, entry := range vendorEntries {
-		if !entry.IsDir() {
-			continue
-		}
-		vendorID := entry.Name()
-		vendorDir := filepath.Join(vendorsDir, vendorID)
-
-		vendorPath := filepath.Join(vendorDir, "vendor.yaml")
-		if !fileExists(vendorPath) {
-			l.recordError("vendor", vendorID, vendorPath,
-				fmt.Errorf("vendor.yaml not found or is a directory"))
-		} else {
-			l.loadVendorConfig(vendorPath)
-		}
-
-		l.loadDeliveryContractsForVendor(vendorDir, vendorID)
-	}
-}
-
-// loadVendorConfig parses a vendor YAML file and stores the result.
-func (l *Loader) loadVendorConfig(path string) {
-	// The immediate parent directory name is the vendor_id.
-	vendorID := filepath.Base(filepath.Dir(path))
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		l.recordError("vendor", vendorID, path,
-			fmt.Errorf("reading file: %w", err))
-		return
-	}
-
-	var file vendorConfigFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
-		l.recordError("vendor", vendorID, path,
-			fmt.Errorf("parsing YAML: %w", err))
-		return
-	}
-
-	baseDelayMs, err := parseDurationToMs(file.RetryPolicy.BaseDelay)
-	if err != nil {
-		l.recordError("vendor", file.VendorID, path,
-			fmt.Errorf("parsing base_delay: %w", err))
-		return
-	}
-	maxDelayMs, err := parseDurationToMs(file.RetryPolicy.MaxDelay)
-	if err != nil {
-		l.recordError("vendor", file.VendorID, path,
-			fmt.Errorf("parsing max_delay: %w", err))
-		return
-	}
-
-	vendor := &port.VendorConfig{
-		VendorID: file.VendorID,
-		BaseURL:  file.BaseURL,
-		Retry: port.RetryPolicy{
-			MaxAttempts: file.RetryPolicy.MaxAttempts,
-			BaseDelayMs: baseDelayMs,
-			MaxDelayMs:  maxDelayMs,
-			Multiplier:  file.RetryPolicy.Multiplier,
-			Jitter:      file.RetryPolicy.Jitter,
-		},
-		Judgment: convertResponseJudgment(file.ResponseJudgment),
-	}
-
-	if file.Auth != nil {
-		vendor.Auth = &port.AuthConfig{
-			Type:   file.Auth.Type,
-			Config: file.Auth.Config,
-		}
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.vendorConfigs[file.VendorID] = &LoadedValue[*port.VendorConfig]{Value: vendor}
-}
-
-// ---- Delivery contracts ----
-
-// loadDeliveryContractsForVendor scans vendors/{vendor}/{biz}/*.yaml for delivery contracts.
-func (l *Loader) loadDeliveryContractsForVendor(vendorDir, vendorID string) {
-	entries, err := os.ReadDir(vendorDir)
-	if err != nil {
-		l.recordError("contract", vendorID, vendorDir,
-			fmt.Errorf("reading vendor dir: %w", err))
-		return
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == "vendor.yaml" {
-			continue
-		}
-
-		bizDir := filepath.Join(vendorDir, entry.Name())
-		bizEntries, err := os.ReadDir(bizDir)
-		if err != nil {
-			l.recordError("contract", vendorID+"/"+entry.Name(), bizDir,
-				fmt.Errorf("reading biz dir: %w", err))
-			continue
-		}
-
-		for _, fe := range bizEntries {
-			if fe.IsDir() || filepath.Ext(fe.Name()) != ".yaml" {
-				continue
-			}
-			l.loadDeliveryContract(filepath.Join(bizDir, fe.Name()), vendorID)
-		}
-	}
-}
-
-// loadDeliveryContract parses a single delivery contract YAML file,
-// converts it to a port.DeliverySpec, and stores the result.
-func (l *Loader) loadDeliveryContract(path, vendorID string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		l.recordError("contract", vendorID+"/"+filepath.Base(path), path,
-			fmt.Errorf("reading file: %w", err))
-		return
-	}
-
-	var file deliveryContractFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
-		l.recordError("contract", vendorID+"/"+filepath.Base(path), path,
-			fmt.Errorf("parsing YAML: %w", err))
-		return
-	}
-
-	eventType := file.EventType
-	if eventType == "" {
-		eventType = strings.TrimSuffix(filepath.Base(path), ".yaml")
-	}
-
-	// Convert to port type immediately — the intermediate type is only
-	// used for YAML deserialization.
-	spec := &port.DeliverySpec{
-		Mapping: port.MappingConfig{
-			EventType: eventType,
-			Request: port.RequestConfig{
-				Method:  file.Request.Method,
-				Path:    file.Request.Path,
-				Headers: file.Request.Headers,
-			},
-			Body: port.BodyConfig{
-				Type:     file.Request.Body.Type,
-				Template: file.Request.Body.Template,
-			},
-		},
-	}
-
-	if file.RetryPolicy != nil {
-		retry, err := convertVendorRetryFile(file.RetryPolicy)
-		if err != nil {
-			l.recordError("contract", vendorID+"/"+filepath.Base(path), path,
-				fmt.Errorf("contract retry_policy: %w", err))
-			return
-		}
-		spec.Retry = retry
-	}
-
-	key := vendorID + "/" + eventType
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.deliveryContracts[key] = &LoadedValue[*port.DeliverySpec]{Value: spec}
-}
-
-// ---- Event schemas ----
-
-// loadHierarchicalEventSchemas loads schema YAML files from events/{biz}/events/.
-func (l *Loader) loadHierarchicalEventSchemas(dir string) {
-	bizEntries, err := os.ReadDir(dir)
-	if err != nil {
-		l.recordError("schema", dir, dir, fmt.Errorf("reading events dir: %w", err))
-		return
-	}
-
-	for _, bizEntry := range bizEntries {
-		if !bizEntry.IsDir() {
-			continue
-		}
-
-		eventsDir := filepath.Join(dir, bizEntry.Name(), "events")
-		if !existsAndIsDir(eventsDir) {
-			continue
-		}
-
-		schemaEntries, err := os.ReadDir(eventsDir)
-		if err != nil {
-			l.recordError("schema", bizEntry.Name(), eventsDir,
-				fmt.Errorf("reading schema dir: %w", err))
-			continue
-		}
-
-		for _, entry := range schemaEntries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
-				continue
-			}
-			l.loadEventSchemaFile(filepath.Join(eventsDir, entry.Name()))
-		}
-	}
-}
-
-// loadEventSchemaFile parses a single event schema YAML file and stores it.
-func (l *Loader) loadEventSchemaFile(path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		l.recordError("schema", path, path, fmt.Errorf("reading file: %w", err))
-		return
-	}
-
-	var sf eventSchemaFile
-	if err := yaml.Unmarshal(data, &sf); err != nil {
-		l.recordError("schema", path, path, fmt.Errorf("parsing YAML: %w", err))
-		return
-	}
-
-	if sf.EventType == "" || sf.Schema == nil {
-		l.recordError("schema", path, path, fmt.Errorf("missing event_type or schema"))
-		return
-	}
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	// Store the parsed map directly — no json.Marshal round-trip.
-	l.eventSchemas[sf.EventType] = &LoadedValue[map[string]any]{Value: sf.Schema}
-}
 
 // ---- Helpers ----
 
@@ -654,7 +549,7 @@ func (l *Loader) validateCrossConfig() {
 		}
 		for _, rule := range lv.Value {
 			if _, ok := l.vendorConfigs[rule.VendorID]; !ok {
-				l.routingRules[eventType] = &LoadedValue[[]*port.RoutingRule]{
+				l.routingRules[eventType] = &LoadedValue[[]port.RoutingRule]{
 					Error: fmt.Errorf("routing rule references non-existent vendor %q", rule.VendorID),
 				}
 				break
@@ -759,7 +654,7 @@ func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec
 	}
 
 	return &spec, nil
-	}
+}
 
 // GetRoutingRules returns all routing rules matching the given event type.
 func (l *Loader) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
@@ -773,12 +668,7 @@ func (l *Loader) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
 	if lv.Error != nil {
 		return nil, lv.Error
 	}
-	// Convert []*port.RoutingRule → []port.RoutingRule
-	rules := make([]port.RoutingRule, len(lv.Value))
-	for i, r := range lv.Value {
-		rules[i] = *r
-	}
-	return rules, nil
+	return lv.Value, lv.Error
 }
 
 // GetEventSchema returns the event schema for the given event type.
