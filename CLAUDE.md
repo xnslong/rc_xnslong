@@ -8,7 +8,7 @@ this is a notification system to push messages for critical events to external s
 .
 ├── cmd/notification-server    # main entry point
 ├── config/                    # runtime config (vendors, mappings, schemas, routing)
-├── doc/                       # design documents
+├── docs/                      # design documents
 ├── internal/
 │   ├── api/                   # HTTP API handlers
 │   ├── config/                # config loader
@@ -72,3 +72,5 @@ config/
 
 Use Outside-In TDD in development flow on development activity. 
 follow the following workflow. Please refer to the [development-guide](/development-guide.md) for more details.
+
+Run end-to-end tests with [test_e2e.sh](/test_e2e.sh), and then update results to [test-cases](/docs/notification-test-cases.md) each time.
