@@ -51,14 +51,14 @@ func TestConfigLoader_GetVendorConfig(t *testing.T) {
 	require.NotNil(t, vendor)
 
 	assert.Equal(t, "crm_system", vendor.VendorID)
-	assert.Equal(t, "PATCH", vendor.Request.Method)
-	assert.Equal(t, "https://crm.company.com/api/v3/contacts/@{payload.user_id}", vendor.Request.URLTmpl)
-	assert.Equal(t, "Bearer crm_api_token_xxx", vendor.Request.Headers["Authorization"])
+	assert.Equal(t, "https://crm.company.com", vendor.BaseURL)
+	assert.Equal(t, "bearer", vendor.Auth.Type)
+	assert.Equal(t, "crm_api_token_xxx", vendor.Auth.Config["token"])
 	assert.Equal(t, 5, vendor.Retry.MaxAttempts)
 }
 
-// TestConfigLoader_GetDeliverySpec verifies that GetDeliverySpec merges
-// vendor config with delivery contract overrides.
+// TestConfigLoader_GetDeliverySpec verifies that GetDeliverySpec returns
+// the delivery contract for a given vendor and event type.
 func TestConfigLoader_GetDeliverySpec(t *testing.T) {
 	loader, err := config.NewLoader("testdata")
 	require.NoError(t, err)
@@ -71,9 +71,9 @@ func TestConfigLoader_GetDeliverySpec(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, spec)
 
-	// Method and URL come from vendor defaults.
+	// Method, path and headers come from the delivery contract.
 	assert.Equal(t, "PATCH", spec.Mapping.Request.Method)
-	assert.Equal(t, "https://crm.company.com/api/v3/contacts/@{payload.user_id}", spec.Mapping.Request.URLTmpl)
+	assert.Equal(t, "/api/v3/contacts/@{payload:user_id}", spec.Mapping.Request.Path)
 
 	// Body template comes from the delivery contract.
 	assert.Equal(t, "mapping", spec.Mapping.Body.Type)
@@ -82,7 +82,8 @@ func TestConfigLoader_GetDeliverySpec(t *testing.T) {
 }
 
 // TestConfigLoader_GetDeliverySpec_NoContract verifies that GetDeliverySpec
-// falls back to vendor body config when no contract exists.
+// returns ErrNotConfigured when no delivery contract exists for the given
+// vendor and event type.
 func TestConfigLoader_GetDeliverySpec_NoContract(t *testing.T) {
 	loader, err := config.NewLoader("testdata")
 	require.NoError(t, err)
@@ -92,14 +93,11 @@ func TestConfigLoader_GetDeliverySpec_NoContract(t *testing.T) {
 	require.NoError(t, err)
 
 	// "user.registered" has a schema but no routing rule or delivery contract.
-	// It should still resolve to vendor defaults.
+	// With the new design, delivery contracts are required — no contract means
+	// the spec is not configured.
 	spec, err := loader.GetDeliverySpec("ad_platform", "user.registered")
-	require.NoError(t, err)
-	require.NotNil(t, spec)
-
-	assert.Equal(t, "POST", spec.Mapping.Request.Method)
-	assert.Equal(t, "mapping", spec.Mapping.Body.Type)
-	assert.Nil(t, spec.Mapping.Body.Template)
+	assert.ErrorIs(t, err, port.ErrNotConfigured)
+	assert.Nil(t, spec)
 }
 
 // TestConfigLoader_GetEventSchema verifies that GetEventSchema returns
@@ -146,11 +144,7 @@ schema:
 	// vendors/good_vendor/vendor.yaml (valid)
 	mustWriteFile(t, tmpDir+"/vendors/good_vendor/vendor.yaml", `
 vendor_id: "good_vendor"
-request:
-  method: POST
-  url: "http://example.com/api"
-  body:
-    type: raw
+base_url: "http://example.com/api"
 retry_policy:
   max_attempts: 3
   base_delay: 1s
@@ -162,11 +156,11 @@ retry_policy:
 	// vendors/bad_vendor/vendor.yaml (invalid YAML — unclosed map)
 	mustWriteFile(t, tmpDir+"/vendors/bad_vendor/vendor.yaml", `
 vendor_id: "bad_vendor"
-request:
-  method: "POST"
-  url: "http://example.com/api"
-  headers
-    Content-Type: "application/json"
+base_url: "http://example.com/api"
+auth
+    type: bearer
+    config:
+      token: "test"
 `)
 
 	loader, err := config.NewLoader(tmpDir)
@@ -216,11 +210,7 @@ routes:
 	// Need vendors referenced by routes
 	mustWriteFile(t, tmpDir+"/vendors/crm_system/vendor.yaml", `
 vendor_id: "crm_system"
-request:
-  method: POST
-  url: "http://example.com/api"
-  body:
-    type: raw
+base_url: "http://example.com/api"
 retry_policy:
   max_attempts: 3
   base_delay: 1s
@@ -230,11 +220,7 @@ retry_policy:
 `)
 	mustWriteFile(t, tmpDir+"/vendors/ad_platform/vendor.yaml", `
 vendor_id: "ad_platform"
-request:
-  method: POST
-  url: "http://example.com/api"
-  body:
-    type: raw
+base_url: "http://example.com/api"
 retry_policy:
   max_attempts: 3
   base_delay: 1s
@@ -332,11 +318,7 @@ routes:
 	// Vendor config
 	mustWriteFile(t, tmpDir+"/vendors/test_vendor/vendor.yaml", `
 vendor_id: "test_vendor"
-request:
-  method: POST
-  url: "http://example.com/api"
-  body:
-    type: mapping
+base_url: "http://example.com/api"
 retry_policy:
   max_attempts: 3
   base_delay: 1s
@@ -349,6 +331,10 @@ retry_policy:
 	mustWriteFile(t, tmpDir+"/vendors/test_vendor/order/order.paid.yaml", `
 event_type: "order.paid"
 request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
   body:
     type: mapping
     template:

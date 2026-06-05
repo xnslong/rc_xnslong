@@ -1,5 +1,9 @@
 event_type: "tc375.each_with_format"
 request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
   body:
     type: mapping
     template:

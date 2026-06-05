@@ -144,9 +144,9 @@ func SetupSuiteWithConfig(configDir, projectRoot string, vendorIDs []string) (*S
 			return nil, fmt.Errorf("vendor config not found: %w", err)
 		}
 
-		u, err := url.Parse(vendorCfg.Request.URLTmpl)
+		u, err := url.Parse(vendorCfg.BaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse vendor URL %q: %w", vendorCfg.Request.URLTmpl, err)
+			return nil, fmt.Errorf("parse vendor base URL %q: %w", vendorCfg.BaseURL, err)
 		}
 		vendorAddr := ":" + u.Port()
 

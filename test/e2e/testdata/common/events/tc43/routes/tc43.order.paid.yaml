@@ -1,0 +1,3 @@
+event_type: "tc43.order.paid"
+routes:
+  - vendor_id: "tpl_valid_vendor"

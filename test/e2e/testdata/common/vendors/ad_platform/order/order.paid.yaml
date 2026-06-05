@@ -1,5 +1,9 @@
 event_type: "order.paid"
 request:
+  method: POST
+  path: "/api/ad/notify"
+  headers:
+    Content-Type: "application/json"
   body:
     type: mapping
     template:

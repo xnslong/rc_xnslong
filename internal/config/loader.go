@@ -31,44 +31,49 @@ type routesFile struct {
 	} `yaml:"routes"`
 }
 
+// vendorAuthFile is the YAML type for the auth block in vendor.yaml.
+type vendorAuthFile struct {
+	Type   string         `yaml:"type"`
+	Config map[string]any `yaml:"config"`
+}
+
+// vendorRetryFile is the YAML type for the retry_policy block.
+type vendorRetryFile struct {
+	MaxAttempts int     `yaml:"max_attempts"`
+	BaseDelay   string  `yaml:"base_delay"`
+	MaxDelay    string  `yaml:"max_delay"`
+	Multiplier  float64 `yaml:"multiplier"`
+	Jitter      float64 `yaml:"jitter"`
+}
+
 // vendorConfigFile is the YAML representation of a vendor config file
 // located at vendors/{vendor}/vendor.yaml.
-// body.template is NOT in the vendor YAML — it lives in the delivery contract
-// at vendors/{vendor}/{biz}/{event}.yaml.
+// This file only contains vendor-level settings that are independent
+// of any specific event type.
 type vendorConfigFile struct {
-	VendorID string `yaml:"vendor_id"`
-	Request  struct {
-		Method  string            `yaml:"method"`
-		URL     string            `yaml:"url"`
-		Headers map[string]string `yaml:"headers"`
-		Body    struct {
-			Type string `yaml:"type"`
-		} `yaml:"body"`
-	} `yaml:"request"`
-	RetryPolicy struct {
-		MaxAttempts int     `yaml:"max_attempts"`
-		BaseDelay   string  `yaml:"base_delay"`
-		MaxDelay    string  `yaml:"max_delay"`
-		Multiplier  float64 `yaml:"multiplier"`
-		Jitter      float64 `yaml:"jitter"`
-	} `yaml:"retry_policy"`
-	ResponseJudgment *vendorResponseJudgment `yaml:"response_judgment"`
+	VendorID        string                   `yaml:"vendor_id"`
+	BaseURL         string                   `yaml:"base_url"`
+	Auth            *vendorAuthFile           `yaml:"auth"`
+	RetryPolicy     vendorRetryFile           `yaml:"retry_policy"`
+	ResponseJudgment *vendorResponseJudgment  `yaml:"response_judgment"`
 }
 
 // deliveryContractFile is the YAML representation of a delivery contract
 // located at vendors/{vendor}/{biz}/{event}.yaml.
-// Fields are optional overrides — empty fields inherit from vendor config.
+// Defines the complete API call parameters (method, path, headers, body)
+// for a specific (vendor, event_type) combination.
 type deliveryContractFile struct {
 	EventType string `yaml:"event_type"`
 	Request   struct {
 		Method  string            `yaml:"method"`
-		URL     string            `yaml:"url"`
+		Path    string            `yaml:"path"`
 		Headers map[string]string `yaml:"headers"`
 		Body    struct {
 			Type     string         `yaml:"type"`
 			Template map[string]any `yaml:"template"`
 		} `yaml:"body"`
 	} `yaml:"request"`
+	RetryPolicy *vendorRetryFile `yaml:"retry_policy"`
 }
 
 type vendorResponseJudgment struct {
@@ -177,9 +182,10 @@ func (l *Loader) Load(ctx context.Context) error {
 //	config/
 //	├── events/
 //	│   └── {biz}/
-//	│       ├── route.yaml                     routing rules
+//	│       ├── routes/                        routing rules
+//	│       │   └── {event}.yaml
 //	│       └── events/
-//	│           └── {event}.yaml                event schema
+//	│           └── {event}.yaml               event schema
 //	└── vendors/
 //	    └── {vendor}/
 //	        ├── vendor.yaml                    vendor config
@@ -351,14 +357,7 @@ func (l *Loader) loadVendorConfig(path string) {
 
 	vendor := &port.VendorConfig{
 		VendorID: file.VendorID,
-		Request: port.RequestConfig{
-			Method:  file.Request.Method,
-			URLTmpl: file.Request.URL,
-			Headers: file.Request.Headers,
-		},
-		Body: port.BodyConfig{
-			Type: file.Request.Body.Type,
-		},
+		BaseURL:  file.BaseURL,
 		Retry: port.RetryPolicy{
 			MaxAttempts: file.RetryPolicy.MaxAttempts,
 			BaseDelayMs: baseDelayMs,
@@ -367,6 +366,13 @@ func (l *Loader) loadVendorConfig(path string) {
 			Jitter:      file.RetryPolicy.Jitter,
 		},
 		Judgment: convertResponseJudgment(file.ResponseJudgment),
+	}
+
+	if file.Auth != nil {
+		vendor.Auth = &port.AuthConfig{
+			Type:   file.Auth.Type,
+			Config: file.Auth.Config,
+		}
 	}
 
 	l.mu.Lock()
@@ -505,6 +511,28 @@ func parseDurationToMs(s string) (int, error) {
 		return 0, err
 	}
 	return int(d.Milliseconds()), nil
+}
+
+// convertVendorRetryFile maps the YAML retry format to the port type.
+func convertVendorRetryFile(r *vendorRetryFile) (*port.RetryPolicy, error) {
+	if r == nil {
+		return nil, nil
+	}
+	baseDelayMs, err := parseDurationToMs(r.BaseDelay)
+	if err != nil {
+		return nil, err
+	}
+	maxDelayMs, err := parseDurationToMs(r.MaxDelay)
+	if err != nil {
+		return nil, err
+	}
+	return &port.RetryPolicy{
+		MaxAttempts: r.MaxAttempts,
+		BaseDelayMs: baseDelayMs,
+		MaxDelayMs:  maxDelayMs,
+		Multiplier:  r.Multiplier,
+		Jitter:      r.Jitter,
+	}, nil
 }
 
 // convertResponseJudgment maps the YAML judgment format to the port type.
@@ -675,7 +703,9 @@ func (l *Loader) GetAllVendorIDs() []string {
 }
 
 // GetDeliverySpec returns the delivery specification for the given vendor and event type.
-// Merges vendor request config with per-event delivery contract overrides.
+// The delivery contract is the required source for the API call parameters (method, path,
+// headers, body). The vendor config provides base_url, auth, default retry, and default
+// judgment. The contract may optionally override the retry policy.
 func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
@@ -689,38 +719,40 @@ func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec
 	}
 	vendor := vendorLV.Value
 
+	contractKey := vendorID + "/" + eventType
+	contractLV, hasContract := l.deliveryContracts[contractKey]
+	if !hasContract {
+		return nil, port.ErrNotConfigured
+	}
+	if contractLV.Error != nil {
+		return nil, contractLV.Error
+	}
+	contract := contractLV.Value
+
 	spec := &port.DeliverySpec{
 		Mapping: port.MappingConfig{
 			EventType: eventType,
-			Request:   vendor.Request,
+			Request: port.RequestConfig{
+				Method:  contract.Request.Method,
+				Path:    contract.Request.Path,
+				Headers: contract.Request.Headers,
+			},
+			Body: port.BodyConfig{
+				Type:     contract.Request.Body.Type,
+				Template: contract.Request.Body.Template,
+			},
 		},
 	}
 
-	contractKey := vendorID + "/" + eventType
-	if contractLV, hasContract := l.deliveryContracts[contractKey]; hasContract {
-		if contractLV.Error != nil {
-			return nil, contractLV.Error
+	// Vendor retry as default; contract may optionally override
+	if contract.RetryPolicy != nil {
+		retry, err := convertVendorRetryFile(contract.RetryPolicy)
+		if err != nil {
+			return nil, fmt.Errorf("contract retry_policy: %w", err)
 		}
-		contract := contractLV.Value
-		if contract.Request.Method != "" {
-			spec.Mapping.Request.Method = contract.Request.Method
-		}
-		if contract.Request.URL != "" {
-			spec.Mapping.Request.URLTmpl = contract.Request.URL
-		}
-		if contract.Request.Headers != nil {
-			spec.Mapping.Request.Headers = contract.Request.Headers
-		}
-		if contract.Request.Body.Template != nil {
-			spec.Mapping.Body = port.BodyConfig{
-				Type:     contract.Request.Body.Type,
-				Template: contract.Request.Body.Template,
-			}
-		} else {
-			spec.Mapping.Body = vendor.Body
-		}
+		spec.Retry = retry
 	} else {
-		spec.Mapping.Body = vendor.Body
+		spec.Retry = &vendor.Retry
 	}
 
 	return spec, nil

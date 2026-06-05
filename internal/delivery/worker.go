@@ -179,17 +179,23 @@ func (p *WorkerPool) ProcessMessage(ctx context.Context, deliveryTaskID string) 
 		return p.handleDeadLetter(ctx, task, err.Error())
 	}
 
+	// Retry policy: contract override takes precedence, otherwise vendor default
+	retryPolicy := vendorCfg.Retry
+	if spec.Retry != nil {
+		retryPolicy = *spec.Retry
+	}
+
 	// 5. Build HTTP request via Engine
 	req, err := p.deps.Engine.BuildRequest(vendorCfg, &spec.Mapping, payload)
 	if err != nil {
 		log.Printf("delivery task %s failed to build request: %v", task.ID, err)
-		return p.retryOrDeadLetter(ctx, task, vendorCfg.Retry, err.Error())
+		return p.retryOrDeadLetter(ctx, task, retryPolicy, err.Error())
 	}
 
 	// 6. Execute HTTP request
 	resp, err := p.deps.HTTPClient.Do(req)
 	if err != nil {
-		return p.handleHTTPError(ctx, task, vendorCfg.Retry, err.Error())
+		return p.handleHTTPError(ctx, task, retryPolicy, err.Error())
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
@@ -202,7 +208,7 @@ func (p *WorkerPool) ProcessMessage(ctx context.Context, deliveryTaskID string) 
 	}
 
 	if isHTTPRetryable(resp) {
-		return p.retryOrDeadLetter(ctx, task, vendorCfg.Retry, resp.Status)
+		return p.retryOrDeadLetter(ctx, task, retryPolicy, resp.Status)
 	}
 
 	return p.handleDeadLetter(ctx, task, resp.Status)

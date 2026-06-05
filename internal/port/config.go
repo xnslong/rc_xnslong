@@ -5,20 +5,26 @@ import "errors"
 // ErrNotConfigured is returned when a requested configuration is not found.
 var ErrNotConfigured = errors.New("config not configured")
 
+// AuthConfig defines how to authenticate API requests to a vendor.
+type AuthConfig struct {
+	Type   string
+	Config map[string]any
+}
+
 // VendorConfig holds vendor-level settings.
 // Judgment is the vendor-wide default; per-event-type override via DeliverySpec.
 type VendorConfig struct {
 	VendorID string
-	Request  RequestConfig
+	BaseURL  string
+	Auth     *AuthConfig
 	Retry    RetryPolicy
 	Judgment ResponseJudgment
-	Body     BodyConfig
 }
 
-// RequestConfig defines how to reach the vendor endpoint.
+// RequestConfig defines the API call parameters for a specific delivery contract.
 type RequestConfig struct {
 	Method  string
-	URLTmpl string
+	Path    string
 	Headers map[string]string
 }
 
@@ -80,9 +86,11 @@ type ResponseJudgment struct {
 // DeliverySpec describes the complete specification for delivering one
 // notification to one vendor for a given event type.
 // Judgment is optional; nil means fall back to VendorConfig.Judgment.
+// Retry is optional; nil means fall back to VendorConfig.Retry.
 type DeliverySpec struct {
 	Mapping  MappingConfig
 	Judgment *ResponseJudgment // nil → fallback to VendorConfig.Judgment
+	Retry    *RetryPolicy      // nil → fallback to VendorConfig.Retry
 	// Sign  *SignConfig       // future: request signing
 }
 

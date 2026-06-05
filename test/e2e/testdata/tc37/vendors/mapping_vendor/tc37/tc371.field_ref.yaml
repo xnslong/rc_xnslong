@@ -1,5 +1,9 @@
 event_type: "tc371.field_ref"
 request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
   body:
     type: mapping
     template:

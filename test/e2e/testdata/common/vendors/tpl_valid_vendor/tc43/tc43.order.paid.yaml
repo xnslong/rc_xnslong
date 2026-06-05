@@ -1,4 +1,4 @@
-event_type: "tc374.format"
+event_type: "tc43.order.paid"
 request:
   method: POST
   path: "/api/notify"
@@ -7,6 +7,5 @@ request:
   body:
     type: mapping
     template:
-      formatted_date:
-        $source: "@{payload:paid_at}"
-        $format: "2006-01-02"
+      user_id: "@{payload:user_id}"
+      bad_ref: "@{payload:nonexistent_field}"

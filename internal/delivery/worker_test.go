@@ -174,10 +174,10 @@ var (
 	testPayload     = map[string]any{"order_id": "ORD-123", "amount": 99.99}
 	testVendorCfg   = &port.VendorConfig{
 		VendorID: testVendorID,
-		Request: port.RequestConfig{
-			Method:  "POST",
-			URLTmpl: "https://vendor.example.com/api/notify",
-			Headers: map[string]string{"Authorization": "Bearer test-token"},
+		BaseURL:  "https://vendor.example.com",
+		Auth: &port.AuthConfig{
+			Type:   "bearer",
+			Config: map[string]any{"token": "test-token"},
 		},
 		Retry: port.RetryPolicy{
 			MaxAttempts: 3,
@@ -195,8 +195,8 @@ var (
 		Mapping: port.MappingConfig{
 			EventType: testEventType,
 			Request: port.RequestConfig{
-				Method:  "POST",
-				URLTmpl: "https://vendor.example.com/api/notify",
+				Method: "POST",
+				Path:   "/api/notify",
 			},
 			Body: port.BodyConfig{Type: "mapping", Template: map[string]any{"event": "@{payload:order_id}"}},
 		},

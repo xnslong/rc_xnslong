@@ -649,26 +649,26 @@ flowchart LR
 
 配置仓库中管理的内容分为以下几类：
 
-| 类别 | 内容 | 维护者 |
-|------|------|--------|
-| **事件 Schema（数据契约）** | 各业务域下事件类型的 payload 结构定义 | 业务方 |
-| **路由授权** | 每个业务域声明哪些事件类型应投递给哪些供应商 | 业务方 |
-| **投递契约** | 每个供应商按业务域组织的映射规则、端点、重试策略等 | 供应商维护者 |
-| **控制条件** | 每条消息实际是否投递的运行时策略（如灰度比例） | 供应商维护者 |
-| **供应商接入信息** | 供应商的基础 URL、鉴权方式、签名方式等公共配置 | 供应商维护者 |
-| **机密信息** | API Key、Secret Token 等凭证，不直接进入 Git 文件 | — |
+| 类别 | 目的 | 包含内容 |
+|------|------|----------|
+| **事件 Schema（数据契约）** | 定义事件类型的 payload 字段结构 | 字段定义（类型、约束、x-format） |
+| **路由授权** | 声明事件类型应投递到哪些供应商 | 事件类型到供应商的映射列表 |
+| **供应商接入信息** | 配置供应商接入系统的公共部分，仅凭供应商即可确定，不依赖具体事件类型 | base\_url、鉴权方式、签名方式、默认重试策略、响应判定规则 |
+| **投递契约** | 定义通知投递到供应商的具体方式，需同时指明供应商和事件类型才能确定 | API 路径（Method + Path）、请求 Header、Body 模板、可选的重试策略覆盖 |
+| **控制条件** | 控制单条消息是否实际投递的运行时策略 | 分流比例、灰度表达式 |
+| **机密信息** | 管理不直接进入 Git 文件的凭证 | API Key、Secret Token |
 
 对应到目录结构：
 
 ```
 events/{biz}/                        # 事件 Schema 和路由授权，由业务方维护
-  events/                            #   具体事件类型定义
-    {biz_event}.yaml                 #     Schema 定义
+  events/                            #   事件类型定义
+    {biz_event}.yaml                 #     Schema：定义 payload 字段结构
   routes/                            #   路由授权声明（按事件类型拆分文件）
-    {biz_event}.yaml                 #     事件→供应商映射
+    {biz_event}.yaml                 #     路由授权：声明事件类型应投递到的供应商
 vendors/{vendor}/                    # 供应商配置，由供应商维护者维护
-  vendor.yaml                        #   供应商接入信息（URL、鉴权、签名等）
-  {biz}/{biz_event}.yaml             #   投递契约 + 控制条件
+  vendor.yaml                        #   供应商接入信息：仅凭供应商即可确定的公共配置
+  {biz}/{biz_event}.yaml             #   投递契约：定义通知投递到供应商的具体方式
 ```
 
 > **路由文件拆分（`routes/{event}.yaml`）的设计理由**：路由文件从每个 biz 一个 `route.yaml` 改为每个 event 独立文件，基于两点考量：① **错误隔离**——每个 YAML 文件对应一个事件类型，一个文件解析失败只影响该事件，不影响同类其他事件；② **治理精细化**——同一事件的路由规则集中在同一文件中，code review 时一眼可识别重复或冲突的路由声明。
@@ -1116,16 +1116,6 @@ items[].location: "@{payload:product_list[*].warehouse}"
 
 选择关键字块式方案的核心理由：**配置的第一原则是"所见即所得"**——看到配置就能直接推断输出，错了也能一眼看出。歧义不可接受。路径通配符仅在纯字段投影场景有简洁优势，但不足以弥补歧义风险。若将来纯投影场景大量出现，可考虑将通配符作为关键字块式的简写语法糖使用。
 
-**配置结构**：一个供应商可能接收多种事件类型，不同事件的接口和字段映射不同。配置按共享和事件专属分层：
-
-```
-vendors/crm_system.yaml                    # 共享配置：auth、sign、retry 策略，同 vendor 所有事件共用
-mappings/crm_system/
-├── order.paid.yaml                        # 事件专属：endpoint、body mapping，按事件类型独立定义
-└── order.refund.yaml
-```
-
-投递工作器根据路由传入的 (vendor_id, event_type) 组合定位映射配置，发送到正确的接口。新增事件类型只需在 `mappings/{vendor}/` 下添加文件，不影响已有配置。
 
 **插件**用于结构化映射无法覆盖的场景（条件构造、异构格式等）。配置 `body.type: plugin` 即可切换，插件仅负责 Body 构造，URL 和 Header 的 `@{...}` 引用、签名、鉴权仍由引擎统一处理。
 
@@ -1144,7 +1134,7 @@ mappings/crm_system/
 **定位**：签名是独立于请求构造的系统能力，与 `request` 平级配置。引擎在请求构造完成后（包括 Body 组装、Header 解析），按供应商配置的 `sign` 段执行签名，将结果注入请求的指定位置。
 
 ```yaml
-# vendors/crm_system.yaml（签名段，与 request 平级）
+# vendors/crm_system/vendor.yaml（签名段）
 sign:
   type: hmac-sha256
   secret: "@{secret:crm/signing_key}"
@@ -1241,15 +1231,14 @@ sign:
 
 ```yaml
 last_paid_date:
-  source: "@{payload:paid_at}"
-  format: "yyyy-MM-dd"
+  $source: "@{payload:paid_at}"
+  $format: "yyyy-MM-dd"
 created_at:
-  source: "@{payload:created_at}"
-  format: "iso8601"
+  $source: "@{payload:created_at}"
+  $format: "iso8601"
 count:
-  source: "@{payload:total_count}"
-  format: "string"
-# sign 在供应商配置顶层，与 request 平级，引擎在请求构造完成后执行
+  $source: "@{payload:total_count}"
+  $format: "string"
 ```
 
 **签名计算流程**：
@@ -1297,10 +1286,10 @@ MD5 计算   = MD5(待签字符串 + secret_value)
 
 | 项目 | 内容 |
 |------|------|
-| **职责** | 消费 MQ → 加载供应商配置 → 数据映射 → HTTP 调用 → 处理响应 → 更新状态 |
+| **职责** | 消费 MQ → 加载投递契约 → 构造请求 → HTTP 调用 → 处理响应 → 更新状态 |
 | **为什么需要** | 实际执行外部 API 调用的执行单元，是系统的"引擎" |
 | **输入** | MQ 中的 DeliveryTask 消息 |
-| **获取** | VendorConfig（端点、鉴权、限流）、DataMapping（结构化规则） |
+| **获取** | VendorConfig、DeliverySpec |
 | **产出** | HTTP 请求 → 外部 API → 成功/失败 → 更新 DeliveryTask 状态 |
 | **设计要点** | 供应商间故障隔离是最重要的设计目标；数据映射是最大技术难点（应对 L1-L4 复杂度谱系）；响应判定需支持供应商自定义规则；重试决策在此层执行 |
 
@@ -2141,3 +2130,22 @@ test/
 **哲学**：术语的准确性影响设计的可理解性和迁移性。"降级"一词会让读者产生"系统从某种更高状态下降了"的错误联想，进而影响对设计意图的理解——边界容错的本质是局部失败不扩散，而非整体能力回退。
 
 **结论**：HLD 和 DD 中所有涉及配置加载容错的"降级"相关术语已修正为"边界容错"和"部分可用状态"。
+
+---
+
+### A.15 供应商接入信息与投递契约的职责划分评审（2026-06-05）
+
+**问题**：vendor.yaml（供应商接入信息）中的 `request` 块（method、url、headers、body）应该属于 vendor 配置还是投递契约？
+
+**关注点**：
+- **vendor 只有一个 API 吗？**：当前设计默认 vendor.yaml 里的 method/URL 就是所有投递共用的——但这只在供应商只接收一种事件类型时才成立。一旦一个供应商接收多种事件，不同事件的 API 端点不同（order.paid → PATCH /contacts，order.refund → POST /refunds），vendor.yaml 里的 method/URL 就失去了语义：它到底代表哪个 API？任何看到这个配置的人都会问同样的问题
+
+- **判断一个配置项该归 vendor 还是投递契约的标准是什么？**：尝试过用术语定义来划分（"基础 URL" vs "端点"），但模糊的术语总有不同的理解方式——"基础"到什么程度，是域名级还是路径前缀级？最终澄清要靠一条更根本的判据：**提到这个供应商、但没有提到任何具体事件类型时，这个信息是否已经确定？** 如果是 → vendor 配置（retry_policy、auth 方式、response_judgment 等）。如果不是，必须同时知道"哪个供应商 + 哪个事件"才能确定 → 投递契约（method、URL、header、body 映射）。这一判据不依赖具体术语的定义，从角色定位出发即可得出正确的归属判断
+
+- **投递契约中的 request 是"覆盖项"还是"固有定义"？**：当前代码将 vendor.yaml 的 request 视为"默认值"，delivery contract 的 request 字段为空时继承 vendor 的。但在上述判据下，method/URL/header/body 全部是投递契约的固有定义——vendor 不应该有"默认的 method/URL"。代码中的"继承"设计实际上是文档职责划分错误的体现，生产环境下永远不会触发（因为每个事件都有独立 API），只是增加解释成本和配置复杂度。正确的做法是：vendor 配置不包含任何请求构造信息（只剩 retry、judgment、auth），投递契约完整定义一次 method/URL/header/body
+
+- **auth 信息（Authorization header）怎么处理？**：不同事件类型的 API 通常共用同一套鉴权凭证（Bearer token、API Key 等）。鉴权不是"调用方式"而是"供应商身份凭证"——它只依赖供应商，不依赖具体事件。因此 auth 应归入 vendor 配置，投递契约中不重复声明。引擎在投递时先按投递契约构造完整请求，再按 vendor 的 auth 配置注入鉴权 Header
+
+**哲学**：术语是沟通的媒介，不是判断的依据。配置职责划分的标准应来自角色定位——"提到供应商时是否已确定"——然后术语自然贴合这个标准来表达。先有判据，后有措辞。
+
+**结论**：vendor.yaml 去掉 `request` 块，仅保留 vendor 级策略（retry_policy、response_judgment、auth）。投递契约完整定义 method、URL、headers、body 映射。HLD §4.4 配置内容表已按此修正。

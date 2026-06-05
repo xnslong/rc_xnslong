@@ -1,11 +1,5 @@
 vendor_id: "crm_system"
-request:
-  method: POST
-  url: "http://localhost:19091/api/notify"
-  headers:
-    Content-Type: "application/json"
-  body:
-    type: mapping
+base_url: "http://localhost:19091"
 retry_policy:
   max_attempts: 3
   base_delay: 1s

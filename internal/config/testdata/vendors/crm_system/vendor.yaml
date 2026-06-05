@@ -1,12 +1,9 @@
 vendor_id: "crm_system"
-request:
-  method: PATCH
-  url: "https://crm.company.com/api/v3/contacts/@{payload.user_id}"
-  headers:
-    Content-Type: "application/json"
-    Authorization: "Bearer crm_api_token_xxx"
-  body:
-    type: mapping
+base_url: "https://crm.company.com"
+auth:
+  type: bearer
+  config:
+    token: "crm_api_token_xxx"
 retry_policy:
   max_attempts: 5
   base_delay: 10s

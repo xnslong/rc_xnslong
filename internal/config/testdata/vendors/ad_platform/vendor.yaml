@@ -1,11 +1,9 @@
 vendor_id: "ad_platform"
-request:
-  method: POST
-  url: "https://ad.company.com/api/v2/track"
-  headers:
-    Content-Type: "application/json"
-  body:
-    type: mapping
+base_url: "https://ad.company.com"
+auth:
+  type: bearer
+  config:
+    token: "ad_api_token_xxx"
 retry_policy:
   max_attempts: 3
   base_delay: 5s

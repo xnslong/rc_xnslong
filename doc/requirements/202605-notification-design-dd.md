@@ -555,14 +555,14 @@ config/                                   # 配置文件根目录
 ├── events/                               # 事件 Schema 定义（按业务方组织）
 │   └── {biz}/
 │       ├── events/
-│       │   └── {biz_event}.yaml          #     Schema 定义
+│       │   └── {biz_event}.yaml          #     Schema：定义 payload 字段结构
 │       └── routes/
-│           └── {biz_event}.yaml          #     路由授权声明（每事件独立文件）
+│           └── {biz_event}.yaml          #     路由授权：声明事件类型应投递到的供应商
 └── vendors/                              # 供应商接入配置（按供应商组织）
     └── {vendor}/
-        ├── vendor.yaml                   #   供应商接入信息（URL、鉴权、签名等）
+        ├── vendor.yaml                   #   供应商接入信息：仅凭供应商即可确定的公共配置
         └── {biz}/
-            └── {biz_event}.yaml          #    投递契约（API 端点 + 映射规则 + 响应判定 + 重试策略）
+            └── {biz_event}.yaml          #   投递契约：定义通知投递到供应商的具体方式
 ```
 
 > MVP 阶段事件 Schema 定义直接从上述目录加载，无需 DB 存储。
@@ -619,25 +619,25 @@ schema:
 <a id="43-供应商接入配置格式"></a>
 ### 4.3 供应商接入配置格式（MVP）
 
+
+**`base_url` 与 `auth` 归属供应商接入信息**：`base_url`（如 `https://crm.company.com`）不依赖具体事件类型，所有 API 共用同一基础地址，因此归入供应商接入信息。鉴权凭证同样为 vendor 全局共享（同一供应商的不同 API 使用同一套凭证），归入 `auth` 字段。两者均属于 HLD §4.4 定义的"仅凭供应商即可确定的公共配置"。投递时引擎将 `vendor.base_url` 与投递契约中的 `request.path` 拼接为完整 URL。
+
 ```yaml
 # vendors/crm_system/vendor.yaml
 vendor_id: "crm_system"
 name: "CRM 系统"
 enabled: true
 
-request:
-  method: PATCH
-  url: "https://crm.company.com/api/v3/contacts/@{payload:user_id}"
-  headers:
-    Content-Type: "application/json"
-    Accept: "application/json"
-    Authorization: "Bearer crm_api_token_xxx"    # 明文 Token，MVP 写死在配置中
-  body:
-    type: mapping       # mapping / raw / none / plugin
+base_url: "https://crm.company.com"
+
+auth:
+  type: bearer                    # MVP 明文 Token，第二阶段引入 SecretStore
+  config:
+    token: "crm_api_token_xxx"
 
 response_judgment:
   success:
-    type: http_status                     # MVP 仅 HTTP 状态码判定
+    type: http_status             # MVP 仅 HTTP 状态码判定
 
 retry_policy:
   max_attempts: 5
@@ -650,18 +650,18 @@ retry_policy:
 > **MVP 说明**：机密信息（API Token 等）直接写死在配置文件中。第二阶段引入 Git + SecretStore 管理。
 
 <a id="44-数据映射规则格式"></a>
-### 4.4 数据映射规则格式
+### 4.4 投递契约格式（API 路径 + 映射规则）
 
-> HLD §5.3 定义结构化映射 + 插件组合方式。本节给出映射规则的完整格式。
+> HLD §5.3 定义结构化映射 + 插件组合方式。本节给出投递契约文件的完整格式。
 
-映射规则按 `(vendor_id, event_type)` 组合独立组织在 `vendors/{vendor_id}/{biz}/{event_type}.yaml` 文件中：
+投递契约按 `(vendor_id, event_type)` 组合独立组织在 `vendors/{vendor_id}/{biz}/{event_type}.yaml` 文件中。每份投递契约包含了通知投递到该供应商的具体方式——`method`、`path`（资源路径）和 `headers` 定义 API 调用参数，`body` 定义字段映射规则。引擎将 `path` 与 vendor 配置中的 `base_url` 拼接为完整 URL：
 
 ```yaml
 # vendors/crm_system/order/order.paid.yaml
 event_type: "order.paid"
 request:
   method: PATCH
-  url: "https://crm.company.com/api/v3/contacts/@{payload:user_id}"
+  path: "/api/v3/contacts/@{payload:user_id}"
   headers:
     Content-Type: "application/json"
     X-Source: "notification-system"

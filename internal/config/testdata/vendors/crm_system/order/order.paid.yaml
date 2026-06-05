@@ -1,5 +1,9 @@
 event_type: "order.paid"
 request:
+  method: PATCH
+  path: "/api/v3/contacts/@{payload:user_id}"
+  headers:
+    Content-Type: "application/json"
   body:
     type: mapping
     template:
