@@ -29,335 +29,363 @@ type apiErrorResponse struct {
 // @test-case TC1.1-valid_payload
 // Test 1.1.1: 有效提交通知 → 202 + data.notification_id
 func TestIngestion_HappyPath(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.1-valid_payload", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "ingest-happy-1",
-		"payload": {"order_id": "123", "user_id": "u1", "amount": 29900, "currency": "CNY"}
-	}`
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "ingest-happy-1",
+			"payload": {"order_id": "123", "user_id": "u1", "amount": 29900, "currency": "CNY"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	var result apiResponse
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	require.NoError(t, err)
+		var result apiResponse
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		require.NoError(t, err)
 
-	data := result.Data
-	require.NotEmpty(t, data["notification_id"])
-	assert.Equal(t, "PENDING", data["status"])
-	require.NotEmpty(t, data["created_at"])
+		data := result.Data
+		require.NotEmpty(t, data["notification_id"])
+		assert.Equal(t, "PENDING", data["status"])
+		require.NotEmpty(t, data["created_at"])
+	})
 }
 
 // @test-case TC1.3-duplicate_idempotent_key
 // Test 1.1.2: 幂等键重复 → 同一 notification_id
 func TestIngestion_DuplicateIdempotentKey(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.3-duplicate_idempotent_key", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "ingest-dup-1",
-		"payload": {"order_id": "456", "user_id": "u2", "amount": 10000, "currency": "USD"}
-	}`
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "ingest-dup-1",
+			"payload": {"order_id": "456", "user_id": "u2", "amount": 10000, "currency": "USD"}
+		}`
 
-	// First POST
-	resp1, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp1.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp1.StatusCode)
+		// First POST
+		resp1, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp1.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp1.StatusCode)
 
-	var result1 apiResponse
-	json.NewDecoder(resp1.Body).Decode(&result1)
-	id1 := result1.Data["notification_id"]
-	require.NotEmpty(t, id1)
+		var result1 apiResponse
+		json.NewDecoder(resp1.Body).Decode(&result1)
+		id1 := result1.Data["notification_id"]
+		require.NotEmpty(t, id1)
 
-	// Second POST with same payload
-	resp2, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp2.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp2.StatusCode)
+		// Second POST with same payload
+		resp2, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp2.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp2.StatusCode)
 
-	var result2 apiResponse
-	json.NewDecoder(resp2.Body).Decode(&result2)
-	id2 := result2.Data["notification_id"]
-	require.NotEmpty(t, id2)
+		var result2 apiResponse
+		json.NewDecoder(resp2.Body).Decode(&result2)
+		id2 := result2.Data["notification_id"]
+		require.NotEmpty(t, id2)
 
-	assert.Equal(t, id1, id2, "duplicate request should return same notification_id")
+		assert.Equal(t, id1, id2, "duplicate request should return same notification_id")
+	})
 }
 
 // @test-case TC1.2-invalid_json_body
 // Test 1.1.3: 无效 JSON → 400 INVALID_REQUEST
 func TestIngestion_InvalidJSON(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.2-invalid_json_body", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(`{invalid json`))
-	require.NoError(t, err)
-	defer resp.Body.Close()
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(`{invalid json`))
+		require.NoError(t, err)
+		defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+	})
 }
 
 // @test-case TC1.2-empty_event
 // Test 1.1.4: event 为空 → 400 INVALID_REQUEST
 func TestIngestion_MissingEvent(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.2-empty_event", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "",
-		"payload": {"order_id": "123"}
-	}`
+		body := `{
+			"event": "",
+			"payload": {"order_id": "123"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+	})
 }
 
 // @test-case TC1.4-unregistered_event
 // Test 1.1.5: 事件类型未注册 → 422 EVENT_NOT_FOUND
 func TestIngestion_EventTypeNotFound(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.4-unregistered_event", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "unknown.event.type",
-		"idempotent_key": "unknown-event-1",
-		"payload": {"order_id": "123", "user_id": "u1", "amount": 100, "currency": "CNY"}
-	}`
+		body := `{
+			"event": "unknown.event.type",
+			"idempotent_key": "unknown-event-1",
+			"payload": {"order_id": "123", "user_id": "u1", "amount": 100, "currency": "CNY"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "EVENT_NOT_FOUND", errResp.Error.Code)
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "EVENT_NOT_FOUND", errResp.Error.Code)
+	})
 }
 
 // @test-case TC1.4-missing_required_field
 // Test 1.1.6: payload 不符合 Schema → 422 SCHEMA_VALIDATION_FAILED + details
 func TestIngestion_SchemaValidationFailed(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.4-missing_required_field", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	// Test case: missing required field order_id
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "schema-fail-1",
-		"payload": {"user_id": "u1", "amount": 100, "currency": "CNY"}
-	}`
+		// Test case: missing required field order_id
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "schema-fail-1",
+			"payload": {"user_id": "u1", "amount": 100, "currency": "CNY"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
-	assert.NotEmpty(t, errResp.Error.Details, "should contain validation details")
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
+		assert.NotEmpty(t, errResp.Error.Details, "should contain validation details")
+	})
 }
 
 // @test-case TC1.1-auto_idempotent_key
 // idempotent_key 不传自动生成
 func TestIngestion_AutoIdempotentKey(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.1-auto_idempotent_key", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.paid",
-		"payload": {"order_id": "auto-key-1", "user_id": "u-auto", "amount": 100, "currency": "CNY"}
-	}`
-	// No idempotent_key in request
+		body := `{
+			"event": "order.paid",
+			"payload": {"order_id": "auto-key-1", "user_id": "u-auto", "amount": 100, "currency": "CNY"}
+		}`
+		// No idempotent_key in request
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	var result apiResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-	assert.NotEmpty(t, result.Data["notification_id"])
-	assert.Equal(t, "PENDING", result.Data["status"])
+		var result apiResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		assert.NotEmpty(t, result.Data["notification_id"])
+		assert.Equal(t, "PENDING", result.Data["status"])
+	})
 }
 
 // @test-case TC1.2-json_array_body
 // POST JSON array → 400 INVALID_REQUEST
 func TestIngestion_JsonArrayBody(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.2-json_array_body", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `[{"event": "order.paid", "payload": {"order_id": "123"}}]`
+		body := `[{"event": "order.paid", "payload": {"order_id": "123"}}]`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+	})
 }
 
 // @test-case TC1.2-json_scalar_body
 // POST pure string → 400 INVALID_REQUEST
 func TestIngestion_JsonScalarBody(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.2-json_scalar_body", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(`"just a string"`))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(`"just a string"`))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+	})
 }
 
 // @test-case TC1.2-invalid_event_type
 // POST event with wrong type (number) → 400 INVALID_REQUEST
 func TestIngestion_InvalidEventType(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.2-invalid_event_type", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{"event": 123, "idempotent_key": "tc-invalid-event-1", "payload": {"order_id": "1"}}`
+		body := `{"event": 123, "idempotent_key": "tc-invalid-event-1", "payload": {"order_id": "1"}}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "INVALID_REQUEST", errResp.Error.Code)
+	})
 }
 
 // @test-case TC1.4-wrong_field_type
 // amount 为 string 而非 integer → 422 SCHEMA_VALIDATION_FAILED + details
 func TestSchema_WrongFieldType(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.4-wrong_field_type", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "tc-wrong-type-1",
-		"payload": {"order_id": "123", "user_id": "u1", "amount": "not-a-number", "currency": "CNY"}
-	}`
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "tc-wrong-type-1",
+			"payload": {"order_id": "123", "user_id": "u1", "amount": "not-a-number", "currency": "CNY"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
-	assert.NotEmpty(t, errResp.Error.Details, "should contain validation details")
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
+		assert.NotEmpty(t, errResp.Error.Details, "should contain validation details")
+	})
 }
 
 // @test-case TC1.4-enum_out_of_range
 // currency 为未注册的值 "GBP" → 422 SCHEMA_VALIDATION_FAILED + details
 func TestSchema_EnumOutOfRange(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.4-enum_out_of_range", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "tc-enum-1",
-		"payload": {"order_id": "123", "user_id": "u1", "amount": 100, "currency": "GBP"}
-	}`
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "tc-enum-1",
+			"payload": {"order_id": "123", "user_id": "u1", "amount": 100, "currency": "GBP"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
-	assert.NotEmpty(t, errResp.Error.Details, "should contain validation details")
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
+		assert.NotEmpty(t, errResp.Error.Details, "should contain validation details")
+	})
 }
 
 // @test-case TC1.4-numeric_constraint
 // amount 为 -100 违反 minimum:0 → 422 SCHEMA_VALIDATION_FAILED + details
 func TestSchema_NumericConstraint(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.4-numeric_constraint", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "tc-num-1",
-		"payload": {"order_id": "123", "user_id": "u1", "amount": -100, "currency": "CNY"}
-	}`
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "tc-num-1",
+			"payload": {"order_id": "123", "user_id": "u1", "amount": -100, "currency": "CNY"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
-	assert.NotEmpty(t, errResp.Error.Details, "should contain validation details")
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
+		assert.NotEmpty(t, errResp.Error.Details, "should contain validation details")
+	})
 }
 
 // @test-case TC1.4-multiple_errors
 // payload 同时缺 2 个必填字段 + 类型错误 → 422 + 2+ details
 func TestSchema_MultipleErrors(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC1.4-multiple_errors", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "tc-multi-1",
-		"payload": {"amount": "not-a-number", "currency": "CNY"}
-	}`
-	// Missing order_id AND user_id, plus amount type mismatch
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "tc-multi-1",
+			"payload": {"amount": "not-a-number", "currency": "CNY"}
+		}`
+		// Missing order_id AND user_id, plus amount type mismatch
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 
-	var errResp apiErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
-	assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
-	assert.GreaterOrEqual(t, len(errResp.Error.Details), 2, "should contain 2+ validation details")
+		var errResp apiErrorResponse
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		assert.Equal(t, "SCHEMA_VALIDATION_FAILED", errResp.Error.Code)
+		assert.GreaterOrEqual(t, len(errResp.Error.Details), 2, "should contain 2+ validation details")
+	})
 }
 
 // ---------------------------------------------------------------------------
