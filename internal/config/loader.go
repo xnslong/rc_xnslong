@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -102,9 +101,9 @@ type LoadedValue[T any] struct {
 // ---- Loader ----
 
 // Loader implements port.ConfigProvider by loading configuration from YAML files.
-// MVP uses local file loading; future stages will support Git + Webhook + SecretStore.
+// Once loaded, a Loader is immutable — no concurrent writes.
+// Future config updates should create a new Loader and atomically swap the pointer.
 type Loader struct {
-	mu    sync.RWMutex
 	paths []string
 
 	routingRules      map[string]*LoadedValue[[]port.RoutingRule] // key: eventType
@@ -128,7 +127,6 @@ func NewLoader(paths ...string) (*Loader, error) {
 // LoadedValue map entry, then logs it. It does NOT return the error — the
 // loader continues with partial availability.
 func (l *Loader) recordError(typ, scope, file string, err error) {
-	l.mu.Lock()
 	switch typ {
 	case "vendor":
 		l.vendorConfigs[scope] = &LoadedValue[*port.VendorConfig]{Error: err}
@@ -139,7 +137,6 @@ func (l *Loader) recordError(typ, scope, file string, err error) {
 	case "route":
 		l.routingRules[scope] = &LoadedValue[[]port.RoutingRule]{Error: err}
 	}
-	l.mu.Unlock()
 
 	log.Error().
 		Str("module", "config.loader").
@@ -539,8 +536,6 @@ func extractPayloadRefsRecursive(val any, refs *[]string) {
 // config items. Failures mark the corresponding entry as errored so that
 // runtime lookups return the error. Startup is NOT blocked.
 func (l *Loader) validateCrossConfig() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
 
 	// 1. Routing rules reference existing vendors
 	for eventType, lv := range l.routingRules {
@@ -597,8 +592,6 @@ func (l *Loader) validateCrossConfig() {
 
 // GetVendorConfig returns the vendor configuration for the given vendor ID.
 func (l *Loader) GetVendorConfig(vendorID string) (*port.VendorConfig, error) {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
 
 	lv, ok := l.vendorConfigs[vendorID]
 	if !ok {
@@ -609,8 +602,6 @@ func (l *Loader) GetVendorConfig(vendorID string) (*port.VendorConfig, error) {
 
 // GetAllVendorIDs returns all known vendor IDs.
 func (l *Loader) GetAllVendorIDs() []string {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
 
 	ids := make([]string, 0, len(l.vendorConfigs))
 	for id := range l.vendorConfigs {
@@ -624,8 +615,6 @@ func (l *Loader) GetAllVendorIDs() []string {
 // headers, body). The vendor config provides base_url, auth, default retry, and default
 // judgment. The contract may optionally override the retry policy.
 func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, error) {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
 
 	vendorLV, ok := l.vendorConfigs[vendorID]
 	if !ok {
@@ -658,8 +647,6 @@ func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec
 
 // GetRoutingRules returns all routing rules matching the given event type.
 func (l *Loader) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
 
 	lv, ok := l.routingRules[eventType]
 	if !ok {
@@ -673,8 +660,6 @@ func (l *Loader) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
 
 // GetEventSchema returns the event schema for the given event type.
 func (l *Loader) GetEventSchema(eventType string) (map[string]any, error) {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
 
 	lv, ok := l.eventSchemas[eventType]
 	if !ok {
