@@ -101,8 +101,30 @@ type LoadedValue[T any] struct {
 // ---- Loader ----
 
 // Loader implements port.ConfigProvider by loading configuration from YAML files.
-// Once loaded, a Loader is immutable — no concurrent writes.
-// Future config updates should create a new Loader and atomically swap the pointer.
+//
+// Once loaded, a Loader is immutable — no method modifies its maps after Load
+// returns. This is a deliberate design choice for two reasons:
+//
+// 1. Partial-update consistency: if a future hot-reload mechanism updates
+//    maps incrementally (e.g. reloading vendors first, then routing rules),
+//    a concurrent Get* call could observe an inconsistent cross-section —
+//    e.g. the new route for a vendor whose old delivery contract is still in
+//    place. An atomic pointer swap avoids this entirely: a new Loader is
+//    fully constructed in the background, then swapped in one atomic store.
+//
+// 2. Residual config detection: incremental in-place updates must diff
+//    file-system state against in-memory state to find deletions. Without a
+//    full diff, a config file that was deleted from disk silently remains in
+//    memory, and the system runs with stale config forever. A full rebuild
+//    from scratch (NewLoader → Load → atomic.Swap) guarantees that the
+//    Loader reflects exactly what is on disk — nothing more, nothing less.
+//
+// Hot-reload pattern:
+//
+//	newLoader := NewLoader(configDir)
+//	if err := newLoader.Load(ctx); err != nil { ... }
+//	atomic.StorePointer(&currentLoader, newLoader)
+//	// The old Loader is garbage-collected; all new requests see the new config.
 type Loader struct {
 	paths []string
 
