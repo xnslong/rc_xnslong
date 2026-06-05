@@ -58,8 +58,6 @@ func waitForNotificationStatus(suite *e2e.Suite, id string, expected []string, t
 // 1.2.1 全链路成功
 // ---------------------------------------------------------------------------
 
-// @test-case TC3.1-matched_vendor_called
-// @test-case TC3.2-status_succeeded
 func TestFullChain_Success(t *testing.T) {
 	suite, err := e2e.SetupSuite()
 	require.NoError(t, err)
@@ -74,22 +72,28 @@ func TestFullChain_Success(t *testing.T) {
 	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
 	var result apiResponse
 	json.NewDecoder(resp.Body).Decode(&result)
-	notifID := result.Data["notification_id"]
+	notifID := fmt.Sprint(result.Data["notification_id"])
 	require.NotEmpty(t, notifID)
 
 	// Wait for crm_system vendor to receive the request
 	vendorReq := suite.MockVendors["crm_system"].WaitRequest(15 * time.Second)
 	require.NotNil(t, vendorReq, "crm_system vendor should receive the request")
-	assert.Equal(t, "POST", vendorReq.Method)
 
-	// Wait for notification status to be SUCCEEDED
-	status, err := waitForNotificationStatus(suite, fmt.Sprint(notifID), []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+	// @test-case TC3.1-matched_vendor_called
+	t.Run("TC3.1-matched_vendor_called", func(t *testing.T) {
+		assert.Equal(t, "POST", vendorReq.Method)
+	})
+
+	// @test-case TC3.2-status_succeeded
+	t.Run("TC3.2-status_succeeded", func(t *testing.T) {
+		status, err := waitForNotificationStatus(suite, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -98,48 +102,50 @@ func TestFullChain_Success(t *testing.T) {
 
 // @test-case TC3.2-no_duplicate_delivery
 func TestFullChain_IdempotentNoResend(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC3.2-no_duplicate_delivery", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "chain-dup-1",
-		"payload": {"order_id": "ORD-002", "user_id": "u2", "amount": 15000, "currency": "CNY"}
-	}`
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "chain-dup-1",
+			"payload": {"order_id": "ORD-002", "user_id": "u2", "amount": 15000, "currency": "CNY"}
+		}`
 
-	// First POST
-	resp1, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp1.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp1.StatusCode)
+		// First POST
+		resp1, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp1.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp1.StatusCode)
 
-	var result1 apiResponse
-	json.NewDecoder(resp1.Body).Decode(&result1)
-	id1 := fmt.Sprint(result1.Data["notification_id"])
+		var result1 apiResponse
+		json.NewDecoder(resp1.Body).Decode(&result1)
+		id1 := fmt.Sprint(result1.Data["notification_id"])
 
-	// Wait for the first crm_system vendor call to happen
-	vendorReq1 := suite.MockVendors["crm_system"].WaitRequest(15 * time.Second)
-	require.NotNil(t, vendorReq1, "crm_system should receive the first request")
+		// Wait for the first crm_system vendor call to happen
+		vendorReq1 := suite.MockVendors["crm_system"].WaitRequest(15 * time.Second)
+		require.NotNil(t, vendorReq1, "crm_system should receive the first request")
 
-	// Wait for SUCCEEDED
-	_, err = waitForNotificationStatus(suite, id1, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
+		// Wait for SUCCEEDED
+		_, err = waitForNotificationStatus(suite, id1, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
 
-	// Second POST with same payload
-	resp2, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp2.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp2.StatusCode)
+		// Second POST with same payload
+		resp2, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp2.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp2.StatusCode)
 
-	var result2 apiResponse
-	json.NewDecoder(resp2.Body).Decode(&result2)
-	id2 := fmt.Sprint(result2.Data["notification_id"])
-	assert.Equal(t, id1, id2, "same idempotent_key must return same notification_id")
+		var result2 apiResponse
+		json.NewDecoder(resp2.Body).Decode(&result2)
+		id2 := fmt.Sprint(result2.Data["notification_id"])
+		assert.Equal(t, id1, id2, "same idempotent_key must return same notification_id")
 
-	// Verify vendor was only called once (no additional request for the duplicate)
-	allReqs := suite.MockVendors["crm_system"].Requests()
-	assert.Len(t, allReqs, 1, "crm_system should be called only once for duplicate idempotent_key")
+		// Verify vendor was only called once (no additional request for the duplicate)
+		allReqs := suite.MockVendors["crm_system"].Requests()
+		assert.Len(t, allReqs, 1, "crm_system should be called only once for duplicate idempotent_key")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -148,32 +154,34 @@ func TestFullChain_IdempotentNoResend(t *testing.T) {
 
 // @test-case TC3.4-no_rule_failed
 func TestFullChain_NoMatchingVendor(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC3.4-no_rule_failed", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	// Use an event that has no routing rules
-	body := `{
-		"event": "user.registered",
-		"idempotent_key": "chain-nomatch-1",
-		"payload": {"user_id": "u3", "name": "Alice"}
-	}`
+		// Use an event that has no routing rules
+		body := `{
+			"event": "user.registered",
+			"idempotent_key": "chain-nomatch-1",
+			"payload": {"user_id": "u3", "name": "Alice"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	var result apiResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-	// "user.registered" is registered in event_schemas but has no routing rules in testdata
-	notifID := fmt.Sprint(result.Data["notification_id"])
-	require.NotEmpty(t, notifID)
+		var result apiResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		// "user.registered" is registered in event_schemas but has no routing rules in testdata
+		notifID := fmt.Sprint(result.Data["notification_id"])
+		require.NotEmpty(t, notifID)
 
-	// Wait for FAILED (no vendor matched)
-	status, err := waitForNotificationStatus(suite, notifID, []string{"FAILED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "FAILED", status)
+		// Wait for FAILED (no vendor matched)
+		status, err := waitForNotificationStatus(suite, notifID, []string{"FAILED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "FAILED", status)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -182,72 +190,76 @@ func TestFullChain_NoMatchingVendor(t *testing.T) {
 
 // @test-case TC3.5-retry_exhausted
 func TestFullChain_RetryExhaustedToDeadLetter(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC3.5-retry_exhausted", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	// Register mock vendor to always return 503 (retryable failure) for both vendors
-	suite.MockVendors["crm_system"].RegisterBehavior([]e2e.MockResponse{
-		{StatusCode: 503, Body: `{"error":"service unavailable"}`},
+		// Register mock vendor to always return 503 (retryable failure) for both vendors
+		suite.MockVendors["crm_system"].RegisterBehavior([]e2e.MockResponse{
+			{StatusCode: 503, Body: `{"error":"service unavailable"}`},
+		})
+		suite.MockVendors["ad_platform"].RegisterBehavior([]e2e.MockResponse{
+			{StatusCode: 503, Body: `{"error":"service unavailable"}`},
+		})
+
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "chain-deadletter-1",
+			"payload": {"order_id": "ORD-003", "user_id": "u4", "amount": 5000, "currency": "CNY"}
+		}`
+
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+		var result apiResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		notifID := fmt.Sprint(result.Data["notification_id"])
+
+		// Wait for FAILED (retries exhausted → all tasks dead_letter)
+		// Retry policy: max_attempts=3, base_delay=1s, multiplier=2, max_delay=5s
+		// Delays: 1st retry ~1s, 2nd retry ~2s (capped at 5s)
+		status, err := waitForNotificationStatus(suite, notifID, []string{"FAILED", "PARTIALLY_FAILED"}, 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "FAILED", status, "notification should be FAILED when all tasks dead-letter")
 	})
-	suite.MockVendors["ad_platform"].RegisterBehavior([]e2e.MockResponse{
-		{StatusCode: 503, Body: `{"error":"service unavailable"}`},
-	})
-
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "chain-deadletter-1",
-		"payload": {"order_id": "ORD-003", "user_id": "u4", "amount": 5000, "currency": "CNY"}
-	}`
-
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-
-	var result apiResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-	notifID := fmt.Sprint(result.Data["notification_id"])
-
-	// Wait for FAILED (retries exhausted → all tasks dead_letter)
-	// Retry policy: max_attempts=3, base_delay=1s, multiplier=2, max_delay=5s
-	// Delays: 1st retry ~1s, 2nd retry ~2s (capped at 5s)
-	status, err := waitForNotificationStatus(suite, notifID, []string{"FAILED", "PARTIALLY_FAILED"}, 30*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "FAILED", status, "notification should be FAILED when all tasks dead-letter")
 }
 
 // @test-case TC3.5-network_unreachable
 // Vendor address unreachable → treated as retryable, eventually FAILED
 func TestFullChain_NetworkUnreachable(t *testing.T) {
-	projectRoot := getProjectRoot()
-	configDir := getTestdataDir("tc35_unreachable")
+	t.Run("TC3.5-network_unreachable", func(t *testing.T) {
+		projectRoot := getProjectRoot()
+		configDir := getTestdataDir("tc35_unreachable")
 
-	// Setup server with this config dir, no mock vendors needed (unreachable)
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, nil)
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		// Setup server with this config dir, no mock vendors needed (unreachable)
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, nil)
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.network_unreachable",
-		"idempotent_key": "chain-unreachable-1",
-		"payload": {}
-	}`
+		body := `{
+			"event": "order.network_unreachable",
+			"idempotent_key": "chain-unreachable-1",
+			"payload": {}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	var result apiResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-	notifID := fmt.Sprint(result.Data["notification_id"])
+		var result apiResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		notifID := fmt.Sprint(result.Data["notification_id"])
 
-	// The vendor URL points to localhost:19999 where nothing listens → connection refused
-	// Retry policy: max_attempts=3, so it will retry and eventually FAILED
-	status, err := waitForNotificationStatus(suite, notifID, []string{"FAILED"}, 30*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "FAILED", status, "notification should be FAILED when vendor is unreachable")
+		// The vendor URL points to localhost:19999 where nothing listens → connection refused
+		// Retry policy: max_attempts=3, so it will retry and eventually FAILED
+		status, err := waitForNotificationStatus(suite, notifID, []string{"FAILED"}, 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "FAILED", status, "notification should be FAILED when vendor is unreachable")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -256,42 +268,42 @@ func TestFullChain_NetworkUnreachable(t *testing.T) {
 
 // @test-case TC3.6-partial_success
 func TestFullChain_PartialSuccessMultiVendor(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC3.6-partial_success", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	// ad_platform → failure, crm_system defaults to 200
-	suite.MockVendors["ad_platform"].RegisterBehavior([]e2e.MockResponse{
-		{StatusCode: 503, Body: `{"error":"service unavailable"}`},
+		// ad_platform → failure, crm_system defaults to 200
+		suite.MockVendors["ad_platform"].RegisterBehavior([]e2e.MockResponse{
+			{StatusCode: 503, Body: `{"error":"service unavailable"}`},
+		})
+
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "chain-partial-1",
+			"payload": {"order_id": "ORD-004", "user_id": "u5", "amount": 8000, "currency": "CNY"}
+		}`
+
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+		var result apiResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		notifID := fmt.Sprint(result.Data["notification_id"])
+
+		// Wait for PARTIALLY_FAILED (1 succeeds, 1 fails)
+		status, err := waitForNotificationStatus(suite, notifID, []string{"PARTIALLY_FAILED", "SUCCEEDED", "FAILED"}, 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "PARTIALLY_FAILED", status, "notification should be PARTIALLY_FAILED when 1 of 2 vendors fail")
 	})
-
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "chain-partial-1",
-		"payload": {"order_id": "ORD-004", "user_id": "u5", "amount": 8000, "currency": "CNY"}
-	}`
-
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-
-	var result apiResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-	notifID := fmt.Sprint(result.Data["notification_id"])
-
-	// Wait for PARTIALLY_FAILED (1 succeeds, 1 fails)
-	status, err := waitForNotificationStatus(suite, notifID, []string{"PARTIALLY_FAILED", "SUCCEEDED", "FAILED"}, 30*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "PARTIALLY_FAILED", status, "notification should be PARTIALLY_FAILED when 1 of 2 vendors fail")
 }
 
 // ---------------------------------------------------------------------------
 // 1.2.6 多路由非目标 vendor 不收到
 // ---------------------------------------------------------------------------
 
-// @test-case TC3.3-all_matched_vendors
-// @test-case TC3.3-unmatched_vendor_ignored
 func TestFullChain_UnmatchedVendorNotCalled(t *testing.T) {
 	suite, err := e2e.SetupSuite()
 	require.NoError(t, err)
@@ -306,7 +318,7 @@ func TestFullChain_UnmatchedVendorNotCalled(t *testing.T) {
 	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
 	var result apiResponse
 	json.NewDecoder(resp.Body).Decode(&result)
@@ -316,16 +328,21 @@ func TestFullChain_UnmatchedVendorNotCalled(t *testing.T) {
 	_, err = waitForNotificationStatus(suite, notifID, []string{"SUCCEEDED"}, 30*time.Second)
 	require.NoError(t, err)
 
-	// Verify crm_system was called (mapped vendor)
 	crmReqs := suite.MockVendors["crm_system"].Requests()
-	assert.NotEmpty(t, crmReqs, "crm_system should be called")
-
-	// Verify ad_platform was called
 	adReqs := suite.MockVendors["ad_platform"].Requests()
-	assert.NotEmpty(t, adReqs, "ad_platform should be called")
 
-	// routing_rules.yaml only has crm_system and ad_platform for order.paid
-	assert.GreaterOrEqual(t, len(crmReqs)+len(adReqs), 2, "at least 2 vendor calls should be made")
+	// @test-case TC3.3-all_matched_vendors
+	t.Run("TC3.3-all_matched_vendors", func(t *testing.T) {
+		assert.NotEmpty(t, crmReqs, "crm_system should be called")
+		assert.NotEmpty(t, adReqs, "ad_platform should be called")
+	})
+
+	// @test-case TC3.3-unmatched_vendor_ignored
+	t.Run("TC3.3-unmatched_vendor_ignored", func(t *testing.T) {
+		// Only crm_system and ad_platform are in the routing rules;
+		// no other vendor should receive requests.
+		assert.GreaterOrEqual(t, len(crmReqs)+len(adReqs), 2, "at least 2 vendor calls should be made")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -335,41 +352,43 @@ func TestFullChain_UnmatchedVendorNotCalled(t *testing.T) {
 // @test-case TC2.1-completed_notification
 // 查询已完成通知 → 返回状态和投递结果
 func TestFullChain_CompletedNotification(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC2.1-completed_notification", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "chain-completed-1",
-		"payload": {"order_id": "ORD-COMP", "user_id": "u-comp", "amount": 100, "currency": "CNY"}
-	}`
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "chain-completed-1",
+			"payload": {"order_id": "ORD-COMP", "user_id": "u-comp", "amount": 100, "currency": "CNY"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	var result apiResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-	notifID := fmt.Sprint(result.Data["notification_id"])
-	require.NotEmpty(t, notifID)
+		var result apiResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		notifID := fmt.Sprint(result.Data["notification_id"])
+		require.NotEmpty(t, notifID)
 
-	// Wait for SUCCEEDED
-	status, err := waitForNotificationStatus(suite, notifID, []string{"SUCCEEDED"}, 30*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		// Wait for SUCCEEDED
+		status, err := waitForNotificationStatus(suite, notifID, []string{"SUCCEEDED"}, 30*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
 
-	// GET full notification
-	getResp, err := http.Get(suite.ServerURL + "/api/v1/notifications/" + notifID)
-	require.NoError(t, err)
-	defer getResp.Body.Close()
-	assert.Equal(t, http.StatusOK, getResp.StatusCode)
+		// GET full notification
+		getResp, err := http.Get(suite.ServerURL + "/api/v1/notifications/" + notifID)
+		require.NoError(t, err)
+		defer getResp.Body.Close()
+		assert.Equal(t, http.StatusOK, getResp.StatusCode)
 
-	var getResult apiResponse
-	json.NewDecoder(getResp.Body).Decode(&getResult)
-	assert.Equal(t, "SUCCEEDED", getResult.Data["status"])
-	assert.NotEmpty(t, getResult.Data["delivery_results"], "delivery_results should be present")
+		var getResult apiResponse
+		json.NewDecoder(getResp.Body).Decode(&getResult)
+		assert.Equal(t, "SUCCEEDED", getResult.Data["status"])
+		assert.NotEmpty(t, getResult.Data["delivery_results"], "delivery_results should be present")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -379,25 +398,27 @@ func TestFullChain_CompletedNotification(t *testing.T) {
 // @test-case TC2.2-nonexistent_notification
 // 查询不存在的通知 → 404
 func TestFullChain_NonexistentNotification(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	t.Run("TC2.2-nonexistent_notification", func(t *testing.T) {
+		suite, err := e2e.SetupSuite()
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	// POST a notification first (confirm server is up)
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "chain-nonexist-1",
-		"payload": {"order_id": "ORD-NX", "user_id": "u-nx", "amount": 100, "currency": "CNY"}
-	}`
+		// POST a notification first (confirm server is up)
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "chain-nonexist-1",
+			"payload": {"order_id": "ORD-NX", "user_id": "u-nx", "amount": 100, "currency": "CNY"}
+		}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	// GET a random UUID that doesn't exist
-	getResp, err := http.Get(suite.ServerURL + "/api/v1/notifications/00000000-0000-0000-0000-000000000000")
-	require.NoError(t, err)
-	defer getResp.Body.Close()
-	assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
+		// GET a random UUID that doesn't exist
+		getResp, err := http.Get(suite.ServerURL + "/api/v1/notifications/00000000-0000-0000-0000-000000000000")
+		require.NoError(t, err)
+		defer getResp.Body.Close()
+		assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
+	})
 }

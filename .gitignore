@@ -35,3 +35,4 @@ settings.local.json
 # Build output
 output/
 .claude
+test/reports

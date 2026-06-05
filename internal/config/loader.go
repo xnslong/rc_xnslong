@@ -17,12 +17,6 @@ import (
 
 // ---- YAML intermediate types ----
 
-// routingRuleItem is a single event_type → vendor_id mapping.
-type routingRuleItem struct {
-	EventType string `yaml:"event_type"`
-	VendorID  string `yaml:"vendor_id"`
-}
-
 // routesFile is the YAML representation of events/{biz}/routes/{event}.yaml.
 type routesFile struct {
 	EventType string `yaml:"event_type"`
@@ -115,7 +109,7 @@ type Loader struct {
 
 	routingRules      map[string]*LoadedValue[[]*port.RoutingRule] // key: eventType
 	vendorConfigs     map[string]*LoadedValue[*port.VendorConfig]
-	deliveryContracts map[string]*LoadedValue[*deliveryContractFile] // key: "vendorID/eventType"
+	deliveryContracts map[string]*LoadedValue[*port.DeliverySpec] // key: "vendorID/eventType"
 	eventSchemas      map[string]*LoadedValue[map[string]any]        // key: eventType
 }
 
@@ -125,7 +119,7 @@ func NewLoader(paths ...string) (*Loader, error) {
 		paths:             paths,
 		routingRules:      make(map[string]*LoadedValue[[]*port.RoutingRule]),
 		vendorConfigs:     make(map[string]*LoadedValue[*port.VendorConfig]),
-		deliveryContracts: make(map[string]*LoadedValue[*deliveryContractFile]),
+		deliveryContracts: make(map[string]*LoadedValue[*port.DeliverySpec]),
 		eventSchemas:      make(map[string]*LoadedValue[map[string]any]),
 	}, nil
 }
@@ -139,7 +133,7 @@ func (l *Loader) recordError(typ, scope, file string, err error) {
 	case "vendor":
 		l.vendorConfigs[scope] = &LoadedValue[*port.VendorConfig]{Error: err}
 	case "contract":
-		l.deliveryContracts[scope] = &LoadedValue[*deliveryContractFile]{Error: err}
+		l.deliveryContracts[scope] = &LoadedValue[*port.DeliverySpec]{Error: err}
 	case "schema":
 		l.eventSchemas[scope] = &LoadedValue[map[string]any]{Error: err}
 	case "route":
@@ -413,7 +407,8 @@ func (l *Loader) loadDeliveryContractsForVendor(vendorDir, vendorID string) {
 	}
 }
 
-// loadDeliveryContract parses a single delivery contract YAML file and stores it.
+// loadDeliveryContract parses a single delivery contract YAML file,
+// converts it to a port.DeliverySpec, and stores the result.
 func (l *Loader) loadDeliveryContract(path, vendorID string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -434,11 +429,38 @@ func (l *Loader) loadDeliveryContract(path, vendorID string) {
 		eventType = strings.TrimSuffix(filepath.Base(path), ".yaml")
 	}
 
+	// Convert to port type immediately — the intermediate type is only
+	// used for YAML deserialization.
+	spec := &port.DeliverySpec{
+		Mapping: port.MappingConfig{
+			EventType: eventType,
+			Request: port.RequestConfig{
+				Method:  file.Request.Method,
+				Path:    file.Request.Path,
+				Headers: file.Request.Headers,
+			},
+			Body: port.BodyConfig{
+				Type:     file.Request.Body.Type,
+				Template: file.Request.Body.Template,
+			},
+		},
+	}
+
+	if file.RetryPolicy != nil {
+		retry, err := convertVendorRetryFile(file.RetryPolicy)
+		if err != nil {
+			l.recordError("contract", vendorID+"/"+filepath.Base(path), path,
+				fmt.Errorf("contract retry_policy: %w", err))
+			return
+		}
+		spec.Retry = retry
+	}
+
 	key := vendorID + "/" + eventType
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.deliveryContracts[key] = &LoadedValue[*deliveryContractFile]{Value: &file}
+	l.deliveryContracts[key] = &LoadedValue[*port.DeliverySpec]{Value: spec}
 }
 
 // ---- Event schemas ----
@@ -645,8 +667,8 @@ func (l *Loader) validateCrossConfig() {
 		if lv.Error != nil || lv.Value == nil {
 			continue
 		}
-		contract := lv.Value
-		eventType := contract.EventType
+		spec := lv.Value
+		eventType := spec.Mapping.EventType
 		if eventType == "" {
 			continue
 		}
@@ -664,10 +686,10 @@ func (l *Loader) validateCrossConfig() {
 		}
 
 		// Extract template field references
-		refs := extractPayloadRefs(contract.Request.Body.Template)
+		refs := extractPayloadRefs(spec.Mapping.Body.Template)
 		for _, ref := range refs {
 			if _, exists := props[ref]; !exists {
-				l.deliveryContracts[key] = &LoadedValue[*deliveryContractFile]{
+				l.deliveryContracts[key] = &LoadedValue[*port.DeliverySpec]{
 					Error: fmt.Errorf("contract references field %q not declared in schema for %q", ref, eventType),
 				}
 				break
@@ -727,36 +749,17 @@ func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec
 	if contractLV.Error != nil {
 		return nil, contractLV.Error
 	}
-	contract := contractLV.Value
+	specLV := contractLV.Value
 
-	spec := &port.DeliverySpec{
-		Mapping: port.MappingConfig{
-			EventType: eventType,
-			Request: port.RequestConfig{
-				Method:  contract.Request.Method,
-				Path:    contract.Request.Path,
-				Headers: contract.Request.Headers,
-			},
-			Body: port.BodyConfig{
-				Type:     contract.Request.Body.Type,
-				Template: contract.Request.Body.Template,
-			},
-		},
+	// Shallow-copy the stored spec, then fill in vendor-level defaults.
+	spec := *specLV
+	if spec.Retry == nil {
+		retry := vendor.Retry
+		spec.Retry = &retry
 	}
 
-	// Vendor retry as default; contract may optionally override
-	if contract.RetryPolicy != nil {
-		retry, err := convertVendorRetryFile(contract.RetryPolicy)
-		if err != nil {
-			return nil, fmt.Errorf("contract retry_policy: %w", err)
-		}
-		spec.Retry = retry
-	} else {
-		spec.Retry = &vendor.Retry
+	return &spec, nil
 	}
-
-	return spec, nil
-}
 
 // GetRoutingRules returns all routing rules matching the given event type.
 func (l *Loader) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {

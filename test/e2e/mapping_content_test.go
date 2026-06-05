@@ -279,34 +279,36 @@ func TestMapping_TypeConversion(t *testing.T) {
 
 // @test-case TC3.7-type_invalid_conversion
 func TestMapping_InvalidConversion(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-type_invalid_conversion", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	// POST with "abc" as count — engine fails to convert "abc" to integer
-	// The worker gets an error from BuildRequest and goes to dead_letter
-	body := `{
-		"event": "tc373.invalid",
-		"idempotent_key": "tc373-invalid-1",
-		"payload": {"count": "abc"}
-	}`
+		// POST with "abc" as count — engine fails to convert "abc" to integer
+		// The worker gets an error from BuildRequest and goes to dead_letter
+		body := `{
+			"event": "tc373.invalid",
+			"idempotent_key": "tc373-invalid-1",
+			"payload": {"count": "abc"}
+		}`
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
 
-	// Notification should become FAILED since all tasks will dead-letter
-	// retry_policy has max_attempts=1, so one failure → dead_letter
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"FAILED"}, 15*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "FAILED", status)
+		// Notification should become FAILED since all tasks will dead-letter
+		// retry_policy has max_attempts=1, so one failure → dead_letter
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"FAILED"}, 15*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "FAILED", status)
 
-	// The vendor receives 0 requests from this notification because the
-	// engine fails before making any HTTP call.
-	// Since each test function creates a fresh MockVendor, Requests() is empty.
-	assert.Empty(t, suite.MockVendors["mapping_vendor"].Requests(),
-		"vendor should not receive any request when mapping fails")
+		// The vendor receives 0 requests from this notification because the
+		// engine fails before making any HTTP call.
+		// Since each test function creates a fresh MockVendor, Requests() is empty.
+		assert.Empty(t, suite.MockVendors["mapping_vendor"].Requests(),
+			"vendor should not receive any request when mapping fails")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -320,36 +322,38 @@ func TestMapping_InvalidConversion(t *testing.T) {
 
 // @test-case TC3.7-type_no_explicit
 func TestMapping_NoExplicitType(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-type_no_explicit", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc373.no_explicit",
-		"idempotent_key": "tc373-no-explicit-1",
-		"payload": {"count": 42}
-	}`
+		body := `{
+			"event": "tc373.no_explicit",
+			"idempotent_key": "tc373-no-explicit-1",
+			"payload": {"count": 42}
+		}`
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
 
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
 
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
 
-	count, ok := gotBody["count"].(float64)
-	assert.True(t, ok, "count should be a number")
-	assert.Equal(t, float64(42), count)
+		count, ok := gotBody["count"].(float64)
+		assert.True(t, ok, "count should be a number")
+		assert.Equal(t, float64(42), count)
 
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -363,34 +367,36 @@ func TestMapping_NoExplicitType(t *testing.T) {
 
 // @test-case TC3.7-format_timestamp
 func TestMapping_FormatConversion(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-format_timestamp", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc374.format",
-		"idempotent_key": "tc374-format-1",
-		"payload": {"paid_at": 1716518400}
-	}`
+		body := `{
+			"event": "tc374.format",
+			"idempotent_key": "tc374-format-1",
+			"payload": {"paid_at": 1716518400}
+		}`
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
 
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
 
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
 
-	assert.Equal(t, "2024-05-24", gotBody["formatted_date"], "timestamp→formatted date")
+		assert.Equal(t, "2024-05-24", gotBody["formatted_date"], "timestamp→formatted date")
 
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -404,40 +410,42 @@ func TestMapping_FormatConversion(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_basic.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_basic.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_basic.yaml](testdata/tc37/events/tc37/events/tc375.each_basic.yaml)
 func TestMapping_EachBasic(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_basic", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_basic",
-		"idempotent_key": "tc375-each-basic-1",
-		"payload": {
-			"products": [{"id": "p1", "qty": 3}, {"id": "p2", "qty": 5}]
+		body := `{
+			"event": "tc375.each_basic",
+			"idempotent_key": "tc375-each-basic-1",
+			"payload": {
+				"products": [{"id": "p1", "qty": 3}, {"id": "p2", "qty": 5}]
+			}
+		}`
+
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
+
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+		expected := []any{
+			map[string]any{"product_id": "p1", "quantity": float64(3)},
+			map[string]any{"product_id": "p2", "quantity": float64(5)},
 		}
-	}`
+		assert.Equal(t, expected, gotBody["products_mapped"])
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
-
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
-
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
-
-	expected := []any{
-		map[string]any{"product_id": "p1", "quantity": float64(3)},
-		map[string]any{"product_id": "p2", "quantity": float64(5)},
-	}
-	assert.Equal(t, expected, gotBody["products_mapped"])
-
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_with_format
@@ -447,39 +455,41 @@ func TestMapping_EachBasic(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_with_format.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_with_format.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_with_format.yaml](testdata/tc37/events/tc37/events/tc375.each_with_format.yaml)
 func TestMapping_EachWithFormat(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_with_format", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_with_format",
-		"idempotent_key": "tc375-each-format-1",
-		"payload": {
-			"orders": [{"date": 1716518400, "total": 100}]
+		body := `{
+			"event": "tc375.each_with_format",
+			"idempotent_key": "tc375-each-format-1",
+			"payload": {
+				"orders": [{"date": 1716518400, "total": 100}]
+			}
+		}`
+
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
+
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+		expected := []any{
+			map[string]any{"order_date": "2024-05-24", "amount": float64(100)},
 		}
-	}`
+		assert.Equal(t, expected, gotBody["orders_mapped"])
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
-
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
-
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
-
-	expected := []any{
-		map[string]any{"order_date": "2024-05-24", "amount": float64(100)},
-	}
-	assert.Equal(t, expected, gotBody["orders_mapped"])
-
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_with_type
@@ -489,40 +499,42 @@ func TestMapping_EachWithFormat(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_with_type.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_with_type.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_with_type.yaml](testdata/tc37/events/tc37/events/tc375.each_with_type.yaml)
 func TestMapping_EachWithType(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_with_type", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_with_type",
-		"idempotent_key": "tc375-each-type-1",
-		"payload": {
-			"items": [{"price": "29.99", "count": "3"}]
-		}
-	}`
+		body := `{
+			"event": "tc375.each_with_type",
+			"idempotent_key": "tc375-each-type-1",
+			"payload": {
+				"items": [{"price": "29.99", "count": "3"}]
+			}
+		}`
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
 
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
 
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
 
-	items := gotBody["items_mapped"].([]any)
-	require.Len(t, items, 1)
-	item := items[0].(map[string]any)
-	assert.InDelta(t, 29.99, item["price"], 0.001)
-	assert.Equal(t, float64(3), item["count"])
+		items := gotBody["items_mapped"].([]any)
+		require.Len(t, items, 1)
+		item := items[0].(map[string]any)
+		assert.InDelta(t, 29.99, item["price"], 0.001)
+		assert.Equal(t, float64(3), item["count"])
 
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_static_mixed
@@ -532,39 +544,41 @@ func TestMapping_EachWithType(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_static.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_static.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_static.yaml](testdata/tc37/events/tc37/events/tc375.each_static.yaml)
 func TestMapping_EachStaticMixed(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_static_mixed", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_static",
-		"idempotent_key": "tc375-each-static-1",
-		"payload": {
-			"products": [{"id": "p1"}]
+		body := `{
+			"event": "tc375.each_static",
+			"idempotent_key": "tc375-each-static-1",
+			"payload": {
+				"products": [{"id": "p1"}]
+			}
+		}`
+
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
+
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+		expected := []any{
+			map[string]any{"product_id": "p1", "source": "notification"},
 		}
-	}`
+		assert.Equal(t, expected, gotBody["products_mapped"])
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
-
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
-
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
-
-	expected := []any{
-		map[string]any{"product_id": "p1", "source": "notification"},
-	}
-	assert.Equal(t, expected, gotBody["products_mapped"])
-
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_nested
@@ -574,44 +588,46 @@ func TestMapping_EachStaticMixed(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_nested.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_nested.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_nested.yaml](testdata/tc37/events/tc37/events/tc375.each_nested.yaml)
 func TestMapping_EachNested(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_nested", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_nested",
-		"idempotent_key": "tc375-each-nested-1",
-		"payload": {
-			"orders": [{"id": "o1", "items": [{"name": "apple", "price": 5}]}]
-		}
-	}`
+		body := `{
+			"event": "tc375.each_nested",
+			"idempotent_key": "tc375-each-nested-1",
+			"payload": {
+				"orders": [{"id": "o1", "items": [{"name": "apple", "price": 5}]}]
+			}
+		}`
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
 
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
 
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
 
-	expected := []any{
-		map[string]any{
-			"order_id": "o1",
-			"products": []any{
-				map[string]any{"product_name": "apple", "cost": float64(5)},
+		expected := []any{
+			map[string]any{
+				"order_id": "o1",
+				"products": []any{
+					map[string]any{"product_name": "apple", "cost": float64(5)},
+				},
 			},
-		},
-	}
-	assert.Equal(t, expected, gotBody["orders_mapped"])
+		}
+		assert.Equal(t, expected, gotBody["orders_mapped"])
 
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_payload_ref
@@ -621,40 +637,42 @@ func TestMapping_EachNested(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_payload_ref.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_payload_ref.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_payload_ref.yaml](testdata/tc37/events/tc37/events/tc375.each_payload_ref.yaml)
 func TestMapping_EachPayloadRef(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_payload_ref", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_payload_ref",
-		"idempotent_key": "tc375-each-payload-ref-1",
-		"payload": {
-			"user_id": "u_001",
-			"products": [{"id": "p1", "qty": 3}]
+		body := `{
+			"event": "tc375.each_payload_ref",
+			"idempotent_key": "tc375-each-payload-ref-1",
+			"payload": {
+				"user_id": "u_001",
+				"products": [{"id": "p1", "qty": 3}]
+			}
+		}`
+
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
+
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+		expected := []any{
+			map[string]any{"product_id": "p1", "quantity": float64(3), "user": "u_001"},
 		}
-	}`
+		assert.Equal(t, expected, gotBody["products_mapped"])
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
-
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
-
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
-
-	expected := []any{
-		map[string]any{"product_id": "p1", "quantity": float64(3), "user": "u_001"},
-	}
-	assert.Equal(t, expected, gotBody["products_mapped"])
-
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_empty_array
@@ -664,37 +682,39 @@ func TestMapping_EachPayloadRef(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_empty.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_empty.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_empty.yaml](testdata/tc37/events/tc37/events/tc375.each_empty.yaml)
 func TestMapping_EachEmptyArray(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_empty_array", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_empty",
-		"idempotent_key": "tc375-each-empty-1",
-		"payload": {
-			"products": []
-		}
-	}`
+		body := `{
+			"event": "tc375.each_empty",
+			"idempotent_key": "tc375-each-empty-1",
+			"payload": {
+				"products": []
+			}
+		}`
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
 
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
 
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
 
-	expected := []any{}
-	assert.Equal(t, expected, gotBody["products_mapped"])
+		expected := []any{}
+		assert.Equal(t, expected, gotBody["products_mapped"])
 
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_not_array
@@ -704,32 +724,34 @@ func TestMapping_EachEmptyArray(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_not_array.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_not_array.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_not_array.yaml](testdata/tc37/events/tc37/events/tc375.each_not_array.yaml)
 func TestMapping_EachNotArray(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_not_array", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	body := `{
-		"event": "tc375.each_not_array",
-		"idempotent_key": "tc375-each-not-array-1",
-		"payload": {
-			"products": "not_an_array"
-		}
-	}`
+		body := `{
+			"event": "tc375.each_not_array",
+			"idempotent_key": "tc375-each-not-array-1",
+			"payload": {
+				"products": "not_an_array"
+			}
+		}`
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
 
-	// Notification should become FAILED because mapping fails for non-array $each source
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"FAILED"}, 15*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "FAILED", status)
+		// Notification should become FAILED because mapping fails for non-array $each source
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"FAILED"}, 15*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "FAILED", status)
 
-	// The vendor receives 0 requests from this notification because the
-	// engine fails before making any HTTP call.
-	assert.Empty(t, suite.MockVendors["mapping_vendor"].Requests(),
-		"vendor should not receive any request when $each source is not an array")
+		// The vendor receives 0 requests from this notification because the
+		// engine fails before making any HTTP call.
+		assert.Empty(t, suite.MockVendors["mapping_vendor"].Requests(),
+			"vendor should not receive any request when $each source is not an array")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -743,41 +765,43 @@ func TestMapping_EachNotArray(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_primitive.yaml](testdata/tc37/events/tc37/events/tc375.each_primitive.yaml)
 func TestMapping_EachPrimitive(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_primitive", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_primitive",
-		"idempotent_key": "tc375-each-primitive-1",
-		"payload": {
-			"produce_list": [1, 2, 3]
+		body := `{
+			"event": "tc375.each_primitive",
+			"idempotent_key": "tc375-each-primitive-1",
+			"payload": {
+				"produce_list": [1, 2, 3]
+			}
+		}`
+
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
+
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+		expected := []any{
+			map[string]any{"product": float64(1)},
+			map[string]any{"product": float64(2)},
+			map[string]any{"product": float64(3)},
 		}
-	}`
+		assert.Equal(t, expected, gotBody["items_mapped"])
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
-
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
-
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
-
-	expected := []any{
-		map[string]any{"product": float64(1)},
-		map[string]any{"product": float64(2)},
-		map[string]any{"product": float64(3)},
-	}
-	assert.Equal(t, expected, gotBody["items_mapped"])
-
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_primitive_with_type
@@ -787,41 +811,43 @@ func TestMapping_EachPrimitive(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_with_type.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_with_type.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_primitive_with_type.yaml](testdata/tc37/events/tc37/events/tc375.each_primitive_with_type.yaml)
 func TestMapping_EachPrimitiveWithType(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_primitive_with_type", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_primitive_with_type",
-		"idempotent_key": "tc375-each-primitive-type-1",
-		"payload": {
-			"produce_list": [1, 2, 3]
+		body := `{
+			"event": "tc375.each_primitive_with_type",
+			"idempotent_key": "tc375-each-primitive-type-1",
+			"payload": {
+				"produce_list": [1, 2, 3]
+			}
+		}`
+
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
+
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+		expected := []any{
+			map[string]any{"product": "1"},
+			map[string]any{"product": "2"},
+			map[string]any{"product": "3"},
 		}
-	}`
+		assert.Equal(t, expected, gotBody["items_mapped"])
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
-
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
-
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
-
-	expected := []any{
-		map[string]any{"product": "1"},
-		map[string]any{"product": "2"},
-		map[string]any{"product": "3"},
-	}
-	assert.Equal(t, expected, gotBody["items_mapped"])
-
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_primitive_with_format
@@ -831,40 +857,42 @@ func TestMapping_EachPrimitiveWithType(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_with_format.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_with_format.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_primitive_with_format.yaml](testdata/tc37/events/tc37/events/tc375.each_primitive_with_format.yaml)
 func TestMapping_EachPrimitiveWithFormat(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_primitive_with_format", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_primitive_with_format",
-		"idempotent_key": "tc375-each-primitive-format-1",
-		"payload": {
-			"timestamps": [1716518400, 1716604800]
+		body := `{
+			"event": "tc375.each_primitive_with_format",
+			"idempotent_key": "tc375-each-primitive-format-1",
+			"payload": {
+				"timestamps": [1716518400, 1716604800]
+			}
+		}`
+
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
+
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+
+		expected := []any{
+			map[string]any{"date": "2024-05-24"},
+			map[string]any{"date": "2024-05-25"},
 		}
-	}`
+		assert.Equal(t, expected, gotBody["items_mapped"])
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
-
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
-
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
-
-	expected := []any{
-		map[string]any{"date": "2024-05-24"},
-		map[string]any{"date": "2024-05-25"},
-	}
-	assert.Equal(t, expected, gotBody["items_mapped"])
-
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
 
 // @test-case TC3.7-each_primitive_empty
@@ -874,35 +902,37 @@ func TestMapping_EachPrimitiveWithFormat(t *testing.T) {
 //   contract:      [testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_empty.yaml](testdata/tc37/vendors/mapping_vendor/tc37/tc375.each_primitive_empty.yaml)
 //   event schema:  [testdata/tc37/events/tc37/events/tc375.each_primitive_empty.yaml](testdata/tc37/events/tc37/events/tc375.each_primitive_empty.yaml)
 func TestMapping_EachPrimitiveEmpty(t *testing.T) {
-	projectRoot := getProjectRootMapping()
-	configDir := createMappingTestConfig(t)
+	t.Run("TC3.7-each_primitive_empty", func(t *testing.T) {
+		projectRoot := getProjectRootMapping()
+		configDir := createMappingTestConfig(t)
 
-	suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"mapping_vendor"})
+		require.NoError(t, err)
+		defer suite.TearDownSuite()
 
-	mv := suite.MockVendors["mapping_vendor"]
+		mv := suite.MockVendors["mapping_vendor"]
 
-	body := `{
-		"event": "tc375.each_primitive_empty",
-		"idempotent_key": "tc375-each-primitive-empty-1",
-		"payload": {
-			"produce_list": []
-		}
-	}`
+		body := `{
+			"event": "tc375.each_primitive_empty",
+			"idempotent_key": "tc375-each-primitive-empty-1",
+			"payload": {
+				"produce_list": []
+			}
+		}`
 
-	notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
 
-	req := mv.WaitRequest(10 * time.Second)
-	require.NotNil(t, req, "mapping_vendor should receive the request")
+		req := mv.WaitRequest(10 * time.Second)
+		require.NotNil(t, req, "mapping_vendor should receive the request")
 
-	var gotBody map[string]any
-	require.NoError(t, json.Unmarshal(req.Body, &gotBody))
+		var gotBody map[string]any
+		require.NoError(t, json.Unmarshal(req.Body, &gotBody))
 
-	expected := []any{}
-	assert.Equal(t, expected, gotBody["items_mapped"])
+		expected := []any{}
+		assert.Equal(t, expected, gotBody["items_mapped"])
 
-	status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status)
+	})
 }
