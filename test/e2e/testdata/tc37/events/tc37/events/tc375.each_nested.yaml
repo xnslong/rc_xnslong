@@ -1,0 +1,27 @@
+event_type: "tc375.each_nested"
+description: "TC3.7-each_nested: nested $each"
+version: 1
+schema:
+  type: object
+  properties:
+    orders:
+      type: array
+      description: "订单列表（包含嵌套商品列表）"
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+            description: "订单 ID"
+          items:
+            type: array
+            description: "订单中的商品列表（内层 $each 遍历）"
+            items:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: "商品名称"
+                price:
+                  type: integer
+                  description: "商品单价"

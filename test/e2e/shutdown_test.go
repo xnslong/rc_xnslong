@@ -23,66 +23,6 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-// createShutdownConfig creates a temporary config directory for shutdown tests
-// with a single vendor and routing rule for "order.paid".
-func createShutdownConfig(t *testing.T, vendorID, port string, maxAttempts int) string {
-	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "e2e-shutdown-*")
-	require.NoError(t, err)
-
-	vendorsDir := filepath.Join(tmpDir, "vendors")
-	require.NoError(t, os.MkdirAll(vendorsDir, 0755))
-
-	vendorYAML := fmt.Sprintf(`vendor_id: "%s"
-request:
-  method: POST
-  url: "http://localhost%s/api/notify"
-  headers:
-    Content-Type: "application/json"
-  body:
-    type: mapping
-retry_policy:
-  max_attempts: %d
-  base_delay: 1s
-  max_delay: 5s
-  multiplier: 2.0
-  jitter: 0.2
-response_judgment:
-  success:
-    type: http_status
-`, vendorID, port, maxAttempts)
-	require.NoError(t, os.WriteFile(filepath.Join(vendorsDir, vendorID+".yaml"), []byte(vendorYAML), 0644))
-
-	routingYAML := fmt.Sprintf(`rules:
-  - event_type: "order.paid"
-    vendor_id: "%s"
-`, vendorID)
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "routing_rules.yaml"), []byte(routingYAML), 0644))
-
-	// Create schema file needed by seedEventSchemas
-	schemasDir := filepath.Join(tmpDir, "event_schemas")
-	require.NoError(t, os.MkdirAll(schemasDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(schemasDir, "order.paid.yaml"), []byte(
-`event_type: "order.paid"
-schema:
-  type: object
-  required: [order_id, user_id, amount, currency]
-  properties:
-    order_id:
-      type: string
-    user_id:
-      type: string
-    amount:
-      type: integer
-      minimum: 0
-    currency:
-      type: string
-      enum: [CNY, USD, EUR]
-`), 0644))
-
-	return tmpDir
-}
-
 // startServer starts the notification-server binary as a subprocess and waits
 // for its health endpoint. It does NOT clean MQ topology, preserving any
 // existing queues and messages (e.g. retry messages).
@@ -181,59 +121,60 @@ func getProjectRoot() string {
 // Server waits for in-flight delivery to complete before shutting down.
 // Vendor responds with 200 after 5s delay → server should wait for it.
 func TestShutdown_WaitDelivery(t *testing.T) {
-	projectRoot := getProjectRoot()
-	tmpDir := createShutdownConfig(t, "sd-wait-vendor", ":19101", 1)
-	defer os.RemoveAll(tmpDir)
+	t.Run("TC5.1-wait_delivery", func(t *testing.T) {
+		projectRoot := getProjectRoot()
+		configDir := getTestdataDir("tc5_wait_delivery")
 
-	// SetupSuiteWithConfig starts the MockVendor on :19101 automatically
-	suite, err := e2e.SetupSuiteWithConfig(tmpDir, projectRoot, []string{"sd-wait-vendor"})
-	require.NoError(t, err)
+		// SetupSuiteWithConfig starts the MockVendor on :19101 automatically
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"sd-wait-vendor"})
+		require.NoError(t, err)
 
-	// Configure delayed 200 (3s) — simulate slow vendor.
-	// The delay must be less than the Suite's 5s kill timeout in stopNotificationServer
-	// so the delivery completes before the server is killed.
-	suite.MockVendors["sd-wait-vendor"].RegisterBehavior([]e2e.MockResponse{
-		{StatusCode: 200, Body: "ok", Delay: 3 * time.Second},
+		// Configure delayed 200 (3s) — simulate slow vendor.
+		// The delay must be less than the Suite's 5s kill timeout in stopNotificationServer
+		// so the delivery completes before the server is killed.
+		suite.MockVendors["sd-wait-vendor"].RegisterBehavior([]e2e.MockResponse{
+			{StatusCode: 200, Body: "ok", Delay: 3 * time.Second},
+		})
+
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "sd-wait-1",
+			"payload": {"order_id": "SD-WAIT", "user_id": "u-wait", "amount": 100, "currency": "CNY"}
+		}`
+
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+		// Wait for vendor to receive the request (not the response — the 5s delay
+		// is in the response path, so the request arrives immediately)
+		require.NotNil(t, suite.MockVendors["sd-wait-vendor"].WaitRequest(10*time.Second),
+			"vendor should receive the request")
+
+		// Stop server — should wait for the 5s inflight delivery to complete
+		start := time.Now()
+		suite.StopServer()
+		elapsed := time.Since(start)
+
+		// Server should have waited for the delivery (3s delay + processing overhead)
+		require.GreaterOrEqual(t, elapsed, 2*time.Second,
+			"server should wait for inflight delivery (~3s vendor delay)")
+		require.Less(t, elapsed, 10*time.Second,
+			"server should not exceed shutdown timeout by much")
+
+		// Verify delivery completed via DB (server is stopped but DB is still alive)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var status string
+		err = suite.DBPool.QueryRow(ctx,
+			"SELECT status FROM notifications WHERE idempotent_key = $1", "sd-wait-1").Scan(&status)
+		if assert.NoError(t, err, "should find notification by idempotent_key") {
+			assert.Equal(t, "SUCCEEDED", status, "notification should be SUCCEEDED after graceful shutdown")
+		}
+
+		suite.TearDownSuite()
 	})
-
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "sd-wait-1",
-		"payload": {"order_id": "SD-WAIT", "user_id": "u-wait", "amount": 100, "currency": "CNY"}
-	}`
-
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-
-	// Wait for vendor to receive the request (not the response — the 5s delay
-	// is in the response path, so the request arrives immediately)
-	require.NotNil(t, suite.MockVendors["sd-wait-vendor"].WaitRequest(10*time.Second),
-		"vendor should receive the request")
-
-	// Stop server — should wait for the 5s inflight delivery to complete
-	start := time.Now()
-	suite.StopServer()
-	elapsed := time.Since(start)
-
-	// Server should have waited for the delivery (3s delay + processing overhead)
-	require.GreaterOrEqual(t, elapsed, 2*time.Second,
-		"server should wait for inflight delivery (~3s vendor delay)")
-	require.Less(t, elapsed, 10*time.Second,
-		"server should not exceed shutdown timeout by much")
-
-	// Verify delivery completed via DB (server is stopped but DB is still alive)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var status string
-	err = suite.DBPool.QueryRow(ctx,
-		"SELECT status FROM notifications WHERE idempotent_key = $1", "sd-wait-1").Scan(&status)
-	if assert.NoError(t, err, "should find notification by idempotent_key") {
-		assert.Equal(t, "SUCCEEDED", status, "notification should be SUCCEEDED after graceful shutdown")
-	}
-
-	suite.TearDownSuite()
 }
 
 // ---------------------------------------------------------------------------
@@ -243,86 +184,87 @@ func TestShutdown_WaitDelivery(t *testing.T) {
 // @test-case TC5.2-retry_on_sigterm
 // SIGTERM during first delivery attempt; after restart the retry completes successfully.
 func TestShutdown_RetryOnSigterm(t *testing.T) {
-	projectRoot := getProjectRoot()
-	tmpDir := createShutdownConfig(t, "sd-retry-vendor", ":19102", 3)
-	defer os.RemoveAll(tmpDir)
+	t.Run("TC5.2-retry_on_sigterm", func(t *testing.T) {
+		projectRoot := getProjectRoot()
+		configDir := getTestdataDir("tc5_retry_on_sigterm")
 
-	// SetupSuiteWithConfig starts the MockVendor on :19102 automatically
-	suite, err := e2e.SetupSuiteWithConfig(tmpDir, projectRoot, []string{"sd-retry-vendor"})
-	require.NoError(t, err)
-	mv := suite.MockVendors["sd-retry-vendor"]
+		// SetupSuiteWithConfig starts the MockVendor on :19102 automatically
+		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"sd-retry-vendor"})
+		require.NoError(t, err)
+		mv := suite.MockVendors["sd-retry-vendor"]
 
-	// First call: 503 with 3s delay; second call: 200
-	// The delay must be less than the Suite's 5s kill timeout
-	mv.RegisterBehavior([]e2e.MockResponse{
-		{StatusCode: 503, Body: `{"error":"service unavailable"}`, Delay: 3 * time.Second},
-		{StatusCode: 200, Body: "ok"},
+		// First call: 503 with 3s delay; second call: 200
+		// The delay must be less than the Suite's 5s kill timeout
+		mv.RegisterBehavior([]e2e.MockResponse{
+			{StatusCode: 503, Body: `{"error":"service unavailable"}`, Delay: 3 * time.Second},
+			{StatusCode: 200, Body: "ok"},
+		})
+
+		body := `{
+			"event": "order.paid",
+			"idempotent_key": "sd-retry-1",
+			"payload": {"order_id": "SD-RETRY", "user_id": "u-retry", "amount": 100, "currency": "CNY"}
+		}`
+
+		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+		var result apiResponse
+		json.NewDecoder(resp.Body).Decode(&result)
+		notifID := fmt.Sprint(result.Data["notification_id"])
+		require.NotEmpty(t, notifID)
+
+		// Wait for vendor to receive the first request
+		require.NotNil(t, mv.WaitRequest(10*time.Second), "vendor should receive the first request")
+
+		// Stop the server — the first delivery attempt is in-flight (503 with 5s delay).
+		// The worker waits for the vendor response (5s) then schedules a retry.
+		suite.StopServer()
+
+		// Clean up the first suite (stops mock vendors, closes connections)
+		suite.TearDownSuite()
+
+		// Restart the server with the same config.
+		// The retry message is in the retry queue; the new server connects to the
+		// same MQ without deleting queues and will consume the retry.
+		serverCmd := startServer(t, configDir, projectRoot, ":8080",
+			"postgres://notify:notify@localhost:5432/notification?sslmode=disable",
+			"amqp://notify:notify@localhost:5672/",
+		)
+		defer serverCmd.Process.Kill()
+
+		// Re-create the mock vendor for the restart (on the same port)
+		mv2 := e2e.NewMockVendor()
+		require.NoError(t, mv2.Start(":19102"))
+		defer mv2.Close()
+
+		// On restart, the server may re-trigger and also retry the original delivery.
+		// Configure the vendor to always return 200.
+		mv2.RegisterBehavior([]e2e.MockResponse{
+			{StatusCode: 200, Body: "ok"},
+		})
+
+		// Wait for the retry to complete — the vendor should return 200
+		serverURL := "http://localhost:8080"
+		status, err := waitForStatus(serverURL, notifID,
+			[]string{"SUCCEEDED", "FAILED", "PARTIALLY_FAILED"}, 60*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, "SUCCEEDED", status, "notification should eventually be SUCCEEDED after restart")
+
+		// Verify vendor was called at least once on the second attempt (retry)
+		assert.GreaterOrEqual(t, len(mv2.Requests()), 1, "vendor should be called on retry after restart")
+
+		// Stop the restarted server
+		serverCmd.Process.Signal(os.Interrupt)
+		done := make(chan error, 1)
+		go func() { done <- serverCmd.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			serverCmd.Process.Kill()
+			<-done
+		}
 	})
-
-	body := `{
-		"event": "order.paid",
-		"idempotent_key": "sd-retry-1",
-		"payload": {"order_id": "SD-RETRY", "user_id": "u-retry", "amount": 100, "currency": "CNY"}
-	}`
-
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-
-	var result apiResponse
-	json.NewDecoder(resp.Body).Decode(&result)
-	notifID := fmt.Sprint(result.Data["notification_id"])
-	require.NotEmpty(t, notifID)
-
-	// Wait for vendor to receive the first request
-	require.NotNil(t, mv.WaitRequest(10*time.Second), "vendor should receive the first request")
-
-	// Stop the server — the first delivery attempt is in-flight (503 with 5s delay).
-	// The worker waits for the vendor response (5s) then schedules a retry.
-	suite.StopServer()
-
-	// Clean up the first suite (stops mock vendors, closes connections)
-	suite.TearDownSuite()
-
-	// Restart the server with the same config.
-	// The retry message is in the retry queue; the new server connects to the
-	// same MQ without deleting queues and will consume the retry.
-	serverCmd := startServer(t, tmpDir, projectRoot, ":8080",
-		"postgres://notify:notify@localhost:5432/notification?sslmode=disable",
-		"amqp://notify:notify@localhost:5672/",
-	)
-	defer serverCmd.Process.Kill()
-
-	// Re-create the mock vendor for the restart (on the same port)
-	mv2 := e2e.NewMockVendor()
-	require.NoError(t, mv2.Start(":19102"))
-	defer mv2.Close()
-
-	// On restart, the server may re-trigger and also retry the original delivery.
-	// Configure the vendor to always return 200.
-	mv2.RegisterBehavior([]e2e.MockResponse{
-		{StatusCode: 200, Body: "ok"},
-	})
-
-	// Wait for the retry to complete — the vendor should return 200
-	serverURL := "http://localhost:8080"
-	status, err := waitForStatus(serverURL, notifID,
-		[]string{"SUCCEEDED", "FAILED", "PARTIALLY_FAILED"}, 60*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status, "notification should eventually be SUCCEEDED after restart")
-
-	// Verify vendor was called at least once on the second attempt (retry)
-	assert.GreaterOrEqual(t, len(mv2.Requests()), 1, "vendor should be called on retry after restart")
-
-	// Stop the restarted server
-	serverCmd.Process.Signal(os.Interrupt)
-	done := make(chan error, 1)
-	go func() { done <- serverCmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		serverCmd.Process.Kill()
-		<-done
-	}
 }

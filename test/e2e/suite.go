@@ -51,7 +51,7 @@ type Suite struct {
 // notification-server as a subprocess using the default testdata configuration.
 func SetupSuite() (*Suite, error) {
 	_, filename, _, _ := runtime.Caller(0)
-	testdataDir := filepath.Join(filepath.Dir(filename), "testdata")
+	testdataDir := filepath.Join(filepath.Dir(filename), "testdata", "common")
 	projectRoot := filepath.Join(filepath.Dir(filename), "..", "..")
 
 	// Load config to discover all vendor IDs
@@ -139,14 +139,14 @@ func SetupSuiteWithConfig(configDir, projectRoot string, vendorIDs []string) (*S
 	// Create one MockVendor per vendor, using ports from config
 	s.MockVendors = make(map[string]*MockVendor)
 	for _, vendorID := range vendorIDs {
-		vendorCfg, ok := loader.GetVendorConfig(vendorID)
-		if !ok {
-			return nil, fmt.Errorf("vendor config not found: %s", vendorID)
+		vendorCfg, err := loader.GetVendorConfig(vendorID)
+		if err != nil {
+			return nil, fmt.Errorf("vendor config not found: %w", err)
 		}
 
-		u, err := url.Parse(vendorCfg.Request.URLTmpl)
+		u, err := url.Parse(vendorCfg.BaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse vendor URL %q: %w", vendorCfg.Request.URLTmpl, err)
+			return nil, fmt.Errorf("parse vendor base URL %q: %w", vendorCfg.BaseURL, err)
 		}
 		vendorAddr := ":" + u.Port()
 

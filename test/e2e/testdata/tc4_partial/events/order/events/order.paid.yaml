@@ -1,0 +1,6 @@
+event_type: "order.paid"
+schema:
+  type: object
+  properties:
+    id:
+      type: string

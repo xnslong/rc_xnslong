@@ -77,12 +77,12 @@ func (s *Service) List(ctx context.Context, callerID, event string, page, pageSi
 // Returns ErrEventNotFound if the event type is not registered.
 // Returns *SchemaValidationError if the payload does not match the schema.
 func (s *Service) validateSchema(ctx context.Context, eventType string, payload map[string]any) error {
-	schemaDef, ok := s.cfg.GetEventSchema(eventType)
-	if !ok {
+	schemaDef, err := s.cfg.GetEventSchema(eventType)
+	if err != nil {
 		return &ErrEventNotFound{EventType: eventType}
 	}
 
-	valErrs := s.validator.validate(schemaDef, payload)
+	valErrs := s.validator.validateMap(schemaDef, payload)
 	if len(valErrs) > 0 {
 		details := make([]ValidationDetail, len(valErrs))
 		for i, ve := range valErrs {

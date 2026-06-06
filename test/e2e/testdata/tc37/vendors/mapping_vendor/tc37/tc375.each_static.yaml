@@ -1,0 +1,14 @@
+event_type: "tc375.each_static"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      products_mapped:
+        $source: "@{payload:products}"
+        $each:
+          product_id: "@{item:id}"
+          source: "notification"

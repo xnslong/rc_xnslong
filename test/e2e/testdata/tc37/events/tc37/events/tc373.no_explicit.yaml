@@ -1,0 +1,9 @@
+event_type: "tc373.no_explicit"
+description: "TC3.7-no_explicit: 无 $type 时使用 event schema 声明的类型"
+version: 1
+schema:
+  type: object
+  properties:
+    count:
+      type: integer
+      description: "Schema 声明为 integer，映射中无 $type 时保持原始类型"

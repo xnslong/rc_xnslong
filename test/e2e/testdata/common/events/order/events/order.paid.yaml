@@ -1,0 +1,21 @@
+event_type: "order.paid"
+description: "订单支付成功通知"
+version: 1
+schema:
+  type: object
+  required: [order_id, user_id, amount, currency]
+  properties:
+    order_id:
+      type: string
+      description: "订单号"
+    user_id:
+      type: string
+      description: "用户标识"
+    amount:
+      type: integer
+      description: "支付金额，单位分"
+      minimum: 0
+    currency:
+      type: string
+      description: "货币类型"
+      enum: [CNY, USD, EUR]

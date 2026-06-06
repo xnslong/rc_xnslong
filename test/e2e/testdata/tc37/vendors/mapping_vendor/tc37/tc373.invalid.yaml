@@ -1,0 +1,12 @@
+event_type: "tc373.invalid"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      invalid:
+        $source: "@{payload:count}"
+        $type: integer

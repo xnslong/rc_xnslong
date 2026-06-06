@@ -113,22 +113,22 @@ func (m *mockMQ) PublishDelayed(ctx context.Context, vendorID, deliveryTaskID st
 
 type mockConfig struct{ mock.Mock }
 
-func (m *mockConfig) GetVendorConfig(vendorID string) (*port.VendorConfig, bool) {
-	return nil, false
+func (m *mockConfig) GetVendorConfig(vendorID string) (*port.VendorConfig, error) {
+	return nil, nil
 }
 
-func (m *mockConfig) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, bool) {
-	return nil, false
+func (m *mockConfig) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, error) {
+	return nil, nil
 }
 
-func (m *mockConfig) GetRoutingRules(eventType string) []port.RoutingRule {
-	return nil
+func (m *mockConfig) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
+	return nil, nil
 }
 
-func (m *mockConfig) GetEventSchema(eventType string) ([]byte, bool) {
+func (m *mockConfig) GetEventSchema(eventType string) (map[string]any, error) {
 	args := m.Called(eventType)
-	data, _ := args.Get(0).([]byte)
-	return data, args.Bool(1)
+	data, _ := args.Get(0).(map[string]any)
+	return data, args.Error(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ func (m *mockConfig) GetEventSchema(eventType string) ([]byte, bool) {
 
 func TestHandler_Ingest_HTTPParsing(t *testing.T) {
 	cfg := new(mockConfig)
-	cfg.On("GetEventSchema", "order.paid").Return([]byte(`{"type":"object"}`), true)
+	cfg.On("GetEventSchema", "order.paid").Return(map[string]any{"type": "object"}, nil)
 
 	db := new(mockDB)
 	db.On("UpsertNotification", mock.Anything, mock.Anything).Return("notif-1", true, nil)
@@ -174,7 +174,7 @@ func TestHandler_Ingest_HTTPParsing(t *testing.T) {
 
 func TestHandler_Ingest_Errors(t *testing.T) {
 	cfg := new(mockConfig)
-	cfg.On("GetEventSchema", mock.Anything).Return(nil, false)
+	cfg.On("GetEventSchema", mock.Anything).Return(nil, assert.AnError)
 
 	svc := ingestion.NewService(new(mockDB), new(mockMQ), cfg)
 	h := handler.NewHandler(svc)
@@ -210,7 +210,7 @@ func TestHandler_Ingest_Errors(t *testing.T) {
 
 func TestHandler_GetStatus(t *testing.T) {
 	cfg := new(mockConfig)
-	cfg.On("GetEventSchema", mock.Anything).Return([]byte(`{"type":"object"}`), true)
+	cfg.On("GetEventSchema", mock.Anything).Return(map[string]any{"type": "object"}, nil)
 
 	db := new(mockDB)
 	db.On("UpsertNotification", mock.Anything, mock.Anything).Return("notif-1", true, nil)

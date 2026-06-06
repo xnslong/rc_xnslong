@@ -8,7 +8,7 @@ this is a notification system to push messages for critical events to external s
 .
 ├── cmd/notification-server    # main entry point
 ├── config/                    # runtime config (vendors, mappings, schemas, routing)
-├── doc/                       # design documents
+├── docs/                      # design documents
 ├── internal/
 │   ├── api/                   # HTTP API handlers
 │   ├── config/                # config loader
@@ -50,7 +50,27 @@ GOOS=linux   go build ./...
 * run go-vet command before each commission.
 * draw diagrams with mermaid.
 
+# conventions
+
+Config directory structure follows DD §4.1:
+
+```
+config/
+├── events/{biz}/                    # event definitions, grouped by business domain
+│   ├── events/{event}.yaml          #   event schema (JSON Schema Draft-07)
+│   └── routes/{event}.yaml          #   routing rules (event_type → vendor_id)
+└── vendors/{vendor}/                # vendor configurations
+    ├── vendor.yaml                  #   base config (method, url, headers, retry, judgment)
+    └── {biz}/{event}.yaml           #   delivery contract (body.template + optional field overrides)
+```
+
+- **Event schemas** are the authoritative data contract. The data producer MUST declare every payload field the event carries — type, nested structure, and constraints — regardless of which vendors consume it. Vendors discover available fields from the schema alone.
+- **Delivery contracts** define how the unified payload maps to a vendor's API format. `body.template` MUST only reference fields declared in the event schema (`@{payload:...}`). References to undeclared fields are invalid — the schema is the single source of truth, not runtime payload inspection.
+- **Route files** are split per event type under `events/{biz}/routes/{event}.yaml`, keeping one routing file per event for better error isolation and duplicate detection.
+
 # development guide
 
 Use Outside-In TDD in development flow on development activity. 
 follow the following workflow. Please refer to the [development-guide](/development-guide.md) for more details.
+
+Run end-to-end tests with [test_e2e.sh](/test_e2e.sh), and then update results to [test-cases](/docs/notification-test-cases.md) each time.

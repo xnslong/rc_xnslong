@@ -117,28 +117,28 @@ type mockConfig struct {
 	mock.Mock
 }
 
-func (m *mockConfig) GetVendorConfig(vendorID string) (*port.VendorConfig, bool) {
+func (m *mockConfig) GetVendorConfig(vendorID string) (*port.VendorConfig, error) {
 	args := m.Called(vendorID)
 	cfg, _ := args.Get(0).(*port.VendorConfig)
-	return cfg, args.Bool(1)
+	return cfg, args.Error(1)
 }
 
-func (m *mockConfig) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, bool) {
+func (m *mockConfig) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, error) {
 	args := m.Called(vendorID, eventType)
 	spec, _ := args.Get(0).(*port.DeliverySpec)
-	return spec, args.Bool(1)
+	return spec, args.Error(1)
 }
 
-func (m *mockConfig) GetRoutingRules(eventType string) []port.RoutingRule {
+func (m *mockConfig) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
 	args := m.Called(eventType)
 	rules, _ := args.Get(0).([]port.RoutingRule)
-	return rules
+	return rules, args.Error(1)
 }
 
-func (m *mockConfig) GetEventSchema(eventType string) ([]byte, bool) {
+func (m *mockConfig) GetEventSchema(eventType string) (map[string]any, error) {
 	args := m.Called(eventType)
-	data, _ := args.Get(0).([]byte)
-	return data, args.Bool(1)
+	data, _ := args.Get(0).(map[string]any)
+	return data, args.Error(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -152,9 +152,9 @@ func TestService_SubmitHappyPath(t *testing.T) {
 
 	eventType := "order.paid"
 	payload := map[string]any{"order_id": "123"}
-	schemaJSON := []byte(`{"type":"object","properties":{"order_id":{"type":"string"}}}`)
+	schemaMap := map[string]any{"type": "object", "properties": map[string]any{"order_id": map[string]any{"type": "string"}}}
 
-	cfg.On("GetEventSchema", eventType).Return(schemaJSON, true)
+	cfg.On("GetEventSchema", eventType).Return(schemaMap, nil)
 
 	params := model.UpsertParams{
 		CallerID:      "system",
@@ -186,7 +186,7 @@ func TestService_SubmitEventNotFound(t *testing.T) {
 	mq := new(mockMQ)
 	cfg := new(mockConfig)
 
-	cfg.On("GetEventSchema", "unknown.event").Return(nil, false)
+	cfg.On("GetEventSchema", "unknown.event").Return(nil, assert.AnError)
 
 	svc := ingestion.NewService(db, mq, cfg)
 	_, err := svc.Submit(context.Background(), model.UpsertParams{
@@ -202,12 +202,12 @@ func TestService_SubmitSchemaValidationFailed(t *testing.T) {
 	cfg := new(mockConfig)
 
 	// Schema requires order_id (string), but payload is missing it
-	schemaJSON := []byte(`{
+	schemaMap := map[string]any{
 		"type": "object",
-		"required": ["order_id"],
-		"properties": {"order_id": {"type": "string"}}
-	}`)
-	cfg.On("GetEventSchema", "order.paid").Return(schemaJSON, true)
+		"required": []any{"order_id"},
+		"properties": map[string]any{"order_id": map[string]any{"type": "string"}},
+	}
+	cfg.On("GetEventSchema", "order.paid").Return(schemaMap, nil)
 
 	svc := ingestion.NewService(db, mq, cfg)
 	_, err := svc.Submit(context.Background(), model.UpsertParams{
@@ -227,8 +227,8 @@ func TestService_SubmitIdempotentDuplicate(t *testing.T) {
 	cfg := new(mockConfig)
 
 	eventType := "order.paid"
-	schemaJSON := []byte(`{"type":"object"}`)
-	cfg.On("GetEventSchema", eventType).Return(schemaJSON, true)
+	schemaMap := map[string]any{"type": "object"}
+	cfg.On("GetEventSchema", eventType).Return(schemaMap, nil)
 
 	params := model.UpsertParams{
 		CallerID: "system", EventType: eventType,

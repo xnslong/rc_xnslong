@@ -1,0 +1,3 @@
+event_type: "tc371.field_ref"
+routes:
+  - vendor_id: "mapping_vendor"

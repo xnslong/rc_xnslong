@@ -1,0 +1,21 @@
+event_type: "tc373.type"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      as_string:
+        $source: "@{payload:count}"
+        $type: string
+      as_int:
+        $source: "@{payload:count_str}"
+        $type: integer
+      as_number:
+        $source: "@{payload:price}"
+        $type: number
+      as_bool:
+        $source: "@{payload:flag}"
+        $type: boolean

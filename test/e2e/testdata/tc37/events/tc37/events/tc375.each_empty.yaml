@@ -1,0 +1,15 @@
+event_type: "tc375.each_empty"
+description: "TC3.7-each_empty: empty array（空数组遍历返回空结果）"
+version: 1
+schema:
+  type: object
+  properties:
+    products:
+      type: array
+      description: "商品列表（空数组）"
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+            description: "商品 ID"

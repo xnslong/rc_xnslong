@@ -1,0 +1,11 @@
+event_type: "tc43.order.paid"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      user_id: "@{payload:user_id}"
+      bad_ref: "@{payload:nonexistent_field}"

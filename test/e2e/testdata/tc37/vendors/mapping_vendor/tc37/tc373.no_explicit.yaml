@@ -1,0 +1,11 @@
+event_type: "tc373.no_explicit"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      count:
+        $source: "@{payload:count}"

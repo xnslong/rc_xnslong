@@ -1,0 +1,18 @@
+event_type: "tc373.type"
+description: "TC3.7.3: $type forced type conversion"
+version: 1
+schema:
+  type: object
+  properties:
+    count:
+      type: integer
+      description: "原始为整数，映射中转为 string"
+    count_str:
+      type: string
+      description: "原始为字符串，映射中转为 integer"
+    price:
+      type: string
+      description: "原始为字符串，映射中转为 number"
+    flag:
+      type: integer
+      description: "原始为整数（0/1），映射中转为 boolean"

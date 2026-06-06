@@ -1,0 +1,15 @@
+event_type: "tc371.field_ref"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      order_id: "@{payload:order_id}"
+      nested_val: "@{payload:a.b.c}"
+      missing_val: "@{payload:missing}"
+      non_map_val: "@{payload:str.x}"
+      static_val: "static-value"
+      mixed_val: "user-@{payload:id}"

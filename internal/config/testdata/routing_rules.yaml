@@ -1,5 +1,0 @@
-rules:
-  - event_type: "order.paid"
-    vendor_id: "crm_system"
-  - event_type: "order.paid"
-    vendor_id: "ad_platform"

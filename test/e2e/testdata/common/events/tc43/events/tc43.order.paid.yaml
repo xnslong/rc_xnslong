@@ -1,0 +1,8 @@
+event_type: "tc43.order.paid"
+schema:
+  type: object
+  properties:
+    user_id:
+      type: string
+    amount:
+      type: integer

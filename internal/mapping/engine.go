@@ -61,15 +61,21 @@ func NewEngine() *Engine {
 
 // BuildRequest constructs a complete http.Request from vendor config, mapping
 // config, and payload. The request includes resolved URL, headers, and body.
+// The URL is constructed as vendorCfg.BaseURL + mappingCfg.Request.Path,
+// where Path may contain @{payload:...} references that are resolved.
+// Auth is injected from vendorCfg.Auth after request construction.
 func (e *Engine) BuildRequest(vendorCfg *port.VendorConfig, mappingCfg *port.MappingConfig, payload map[string]any) (*http.Request, error) {
 	if vendorCfg == nil {
+		return nil, nil
+	}
+	if mappingCfg == nil {
 		return nil, nil
 	}
 
 	ctx := resolveContext{payload: payload}
 
 	var bodyReader io.Reader
-	if mappingCfg != nil && mappingCfg.Body.Type != "" && mappingCfg.Body.Type != "none" {
+	if mappingCfg.Body.Type != "" && mappingCfg.Body.Type != "none" {
 		bodyBytes, err := e.buildBody(&mappingCfg.Body, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("build body: %w", err)
@@ -79,13 +85,39 @@ func (e *Engine) BuildRequest(vendorCfg *port.VendorConfig, mappingCfg *port.Map
 		}
 	}
 
-	req, err := http.NewRequest(vendorCfg.Request.Method, vendorCfg.Request.URLTmpl, bodyReader)
+	// Resolve path template references (e.g. /api/v3/contacts/@{payload:user_id})
+	resolvedPath, err := e.resolveField(mappingCfg.Request.Path, ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve path: %w", err)
+	}
+	urlStr := vendorCfg.BaseURL + tostring(resolvedPath)
+
+	req, err := http.NewRequest(mappingCfg.Request.Method, urlStr, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
 
-	for k, v := range vendorCfg.Request.Headers {
+	// Set headers from delivery contract
+	for k, v := range mappingCfg.Request.Headers {
 		req.Header.Set(k, v)
+	}
+
+	// Inject auth from vendor config (added after headers so it can override any
+	// auth-related headers that were set in the contract)
+	if vendorCfg.Auth != nil {
+		switch vendorCfg.Auth.Type {
+		case "bearer":
+			if token, ok := vendorCfg.Auth.Config["token"].(string); ok {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+		case "basic":
+			if user, ok := vendorCfg.Auth.Config["user"].(string); ok {
+				if pass, ok := vendorCfg.Auth.Config["pass"].(string); ok {
+					auth := tostring(user) + ":" + tostring(pass)
+					req.Header.Set("Authorization", "Basic "+auth)
+				}
+			}
+		}
 	}
 
 	return req, nil

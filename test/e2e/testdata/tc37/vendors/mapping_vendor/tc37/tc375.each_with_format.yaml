@@ -1,0 +1,16 @@
+event_type: "tc375.each_with_format"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      orders_mapped:
+        $source: "@{payload:orders}"
+        $each:
+          order_date:
+            $source: "@{item:date}"
+            $format: "2006-01-02"
+          amount: "@{item:total}"

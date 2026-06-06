@@ -1,0 +1,27 @@
+event_type: "tc371.field_ref"
+description: "TC3.7.1: @{payload:field} field reference tests"
+version: 1
+schema:
+  type: object
+  properties:
+    order_id:
+      type: string
+      description: "订单号"
+    a:
+      type: object
+      description: "嵌套对象路径访问测试（a.b.c → v）"
+      properties:
+        b:
+          type: object
+          properties:
+            c:
+              type: string
+    str:
+      type: string
+      description: "字符串字段，用于测试非 map 中间路径"
+    id:
+      type: integer
+      description: "用户 ID"
+    missing:
+      type: string
+      description: "paylaod 中不存在的字段，用于测试缺失字段返回 null"

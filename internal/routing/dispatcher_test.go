@@ -117,28 +117,28 @@ type mockConfig struct {
 	mock.Mock
 }
 
-func (m *mockConfig) GetVendorConfig(vendorID string) (*port.VendorConfig, bool) {
+func (m *mockConfig) GetVendorConfig(vendorID string) (*port.VendorConfig, error) {
 	args := m.Called(vendorID)
 	cfg, _ := args.Get(0).(*port.VendorConfig)
-	return cfg, args.Bool(1)
+	return cfg, args.Error(1)
 }
 
-func (m *mockConfig) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, bool) {
+func (m *mockConfig) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, error) {
 	args := m.Called(vendorID, eventType)
 	spec, _ := args.Get(0).(*port.DeliverySpec)
-	return spec, args.Bool(1)
+	return spec, args.Error(1)
 }
 
-func (m *mockConfig) GetRoutingRules(eventType string) []port.RoutingRule {
+func (m *mockConfig) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
 	args := m.Called(eventType)
 	rules, _ := args.Get(0).([]port.RoutingRule)
-	return rules
+	return rules, args.Error(1)
 }
 
-func (m *mockConfig) GetEventSchema(eventType string) ([]byte, bool) {
+func (m *mockConfig) GetEventSchema(eventType string) (map[string]any, error) {
 	args := m.Called(eventType)
-	data, _ := args.Get(0).([]byte)
-	return data, args.Bool(1)
+	data, _ := args.Get(0).(map[string]any)
+	return data, args.Error(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +173,7 @@ func TestDispatcher_MultipleRules(t *testing.T) {
 		{EventType: "order.paid", VendorID: "crm_system"},
 		{EventType: "order.paid", VendorID: "ad_platform"},
 	}
-	cfg.On("GetRoutingRules", "order.paid").Return(rules)
+	cfg.On("GetRoutingRules", "order.paid").Return(rules, nil)
 
 	// Create 2 delivery tasks
 	tasks := []*model.DeliveryTask{
@@ -229,7 +229,7 @@ func TestDispatcher_NoRules(t *testing.T) {
 	db.On("GetNotification", mock.Anything, "n1").Return(notif, nil)
 
 	// No rules match "order.paid"
-	cfg.On("GetRoutingRules", "order.paid").Return([]port.RoutingRule{})
+	cfg.On("GetRoutingRules", "order.paid").Return([]port.RoutingRule{}, nil)
 
 	// Should update notification status to FAILED
 	db.On("UpdateNotificationStatus", mock.Anything, "n1", "FAILED").Return(nil)
@@ -316,7 +316,7 @@ func TestDispatcher_DBCreateError(t *testing.T) {
 	rules := []port.RoutingRule{
 		{EventType: "order.paid", VendorID: "crm_system"},
 	}
-	cfg.On("GetRoutingRules", "order.paid").Return(rules)
+	cfg.On("GetRoutingRules", "order.paid").Return(rules, nil)
 
 	// DB returns an error when creating tasks
 	expectedErr := errors.New("db insert error")

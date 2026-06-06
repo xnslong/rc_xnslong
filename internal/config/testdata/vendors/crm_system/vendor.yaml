@@ -1,0 +1,15 @@
+vendor_id: "crm_system"
+base_url: "https://crm.company.com"
+auth:
+  type: bearer
+  config:
+    token: "crm_api_token_xxx"
+retry_policy:
+  max_attempts: 5
+  base_delay: 10s
+  max_delay: 300s
+  multiplier: 2.0
+  jitter: 0.2
+response_judgment:
+  success:
+    type: http_status
