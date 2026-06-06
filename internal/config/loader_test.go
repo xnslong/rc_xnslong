@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -243,10 +244,12 @@ retry_policy:
 	require.NoError(t, err)
 	assert.Len(t, registeredRules, 1)
 
-	// Event with failed route file should return ErrNotConfigured
+	// Event with failed route file should return parse error via recordError
 	badRules, err := loader.GetRoutingRules("order.bad")
-	assert.ErrorIs(t, err, port.ErrNotConfigured)
+	assert.Error(t, err, "order.bad should have parse error")
 	assert.Nil(t, badRules)
+	assert.False(t, errors.Is(err, port.ErrNotConfigured),
+		"parse error should not be ErrNotConfigured")
 }
 
 // TestConfigLoader_CrossConfigValidation verifies that cross-config

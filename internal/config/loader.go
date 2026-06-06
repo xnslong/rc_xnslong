@@ -323,11 +323,11 @@ func (l *Loader) loadDir(dir string) error {
 		walkYAML[routesFile](l, eventsDir, "{biz}/routes/{event}.yaml", "route",
 			func(file routesFile, path string, vars map[string]string, err error) {
 				if err != nil {
-					l.recordError("route", path, path, err)
+					l.recordError("route", vars["event"], path, err)
 					return
 				}
 				if file.EventType == "" {
-					l.recordError("route", path, path, fmt.Errorf("missing event_type"))
+					l.recordError("route", vars["event"], path, fmt.Errorf("missing event_type"))
 					return
 				}
 				var rules []port.RoutingRule
@@ -339,11 +339,11 @@ func (l *Loader) loadDir(dir string) error {
 		walkYAML[eventSchemaFile](l, eventsDir, "{biz}/events/{event}.yaml", "schema",
 			func(sf eventSchemaFile, path string, vars map[string]string, err error) {
 				if err != nil {
-					l.recordError("schema", path, path, err)
+					l.recordError("schema", vars["event"], path, err)
 					return
 				}
 				if sf.EventType == "" || sf.Schema == nil {
-					l.recordError("schema", path, path, fmt.Errorf("missing event_type or schema"))
+					l.recordError("schema", vars["event"], path, fmt.Errorf("missing event_type or schema"))
 					return
 				}
 				l.eventSchemas[sf.EventType] = &LoadedValue[map[string]any]{Value: sf.Schema}
@@ -391,7 +391,7 @@ func (l *Loader) loadDir(dir string) error {
 		walkYAML[deliveryContractFile](l, vendorsDir, "{vendor}/{biz}/{event}.yaml", "contract",
 			func(file deliveryContractFile, path string, vars map[string]string, err error) {
 				if err != nil {
-					l.recordError("contract", vars["vendor"]+"/"+filepath.Base(path), path, err)
+					l.recordError("contract", vars["vendor"]+"/"+vars["event"], path, err)
 					return
 				}
 				vendorID := vars["vendor"]
