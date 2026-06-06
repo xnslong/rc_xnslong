@@ -252,9 +252,10 @@ retry_policy:
 		"parse error should not be ErrNotConfigured")
 }
 
-// TestConfigLoader_CrossConfigValidation verifies that cross-config
-// validation (e.g., route references non-existent vendor) is best-effort
-// and doesn't block startup.
+// TestConfigLoader_CrossConfigValidation verifies that a routing rule
+// referencing a non-existent vendor is loaded as-is — no cross-config
+// validation blocks startup, and the rule is returned to callers so the
+// runtime can handle the missing vendor naturally at delivery time.
 func TestConfigLoader_CrossConfigValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -266,19 +267,61 @@ routes:
 `)
 
 	// No vendors/ directory at all
-	// (valid route, no vendors — both warnings but not fatal)
 
 	loader, err := config.NewLoader(tmpDir)
 	require.NoError(t, err)
 
-	// Should NOT fail — validation doesn't block startup
+	// Should NOT fail — no cross-config validation blocks startup
 	err = loader.Load(context.Background())
 	require.NoError(t, err, "Load should not fail when a route references a non-existent vendor")
 
-	// Route should be marked as errored — not available at runtime
+	// Rule is returned as loaded; the missing vendor is handled
+	// at delivery time when GetVendorConfig fails.
 	rules, err := loader.GetRoutingRules("order.paid")
-	assert.Error(t, err, "route referencing non-existent vendor should be errored")
-	assert.Nil(t, rules)
+	require.NoError(t, err)
+	require.Len(t, rules, 1, "the rule should still be present in the list")
+	assert.Equal(t, "nonexistent_vendor", rules[0].VendorID)
+}
+
+// TestConfigLoader_CrossConfig_MixedVendors verifies that routing rules are
+// loaded independently of vendor config existence — valid and invalid vendor
+// references are all returned as loaded, and the runtime handles missing
+// vendors naturally at delivery time.
+func TestConfigLoader_CrossConfig_MixedVendors(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	mustWriteFile(t, tmpDir+"/vendors/alice/vendor.yaml", `
+vendor_id: "alice"
+base_url: "https://alice.example.com/api"
+retry_policy:
+  max_attempts: 3
+  base_delay: "1s"
+  max_delay: "10s"
+  multiplier: 2.0
+  jitter: 0.1
+`)
+
+	mustWriteFile(t, tmpDir+"/events/order/routes/order.paid.yaml", `
+event_type: "order.paid"
+routes:
+  - vendor_id: "alice"
+  - vendor_id: "nonexistent_vendor"
+  - vendor_id: "bob"
+`)
+
+	loader, err := config.NewLoader(tmpDir)
+	require.NoError(t, err)
+
+	err = loader.Load(context.Background())
+	require.NoError(t, err, "Load should not fail on mixed valid/invalid routes")
+
+	// All 3 rules should be returned as loaded, regardless of vendor existence
+	rules, err := loader.GetRoutingRules("order.paid")
+	require.NoError(t, err)
+	require.Len(t, rules, 3, "all rules including invalid ones should be present")
+	assert.Equal(t, "alice", rules[0].VendorID)
+	assert.Equal(t, "nonexistent_vendor", rules[1].VendorID)
+	assert.Equal(t, "bob", rules[2].VendorID)
 }
 
 // TestConfigLoader_Load_Error verifies that Load returns an error when
@@ -355,6 +398,227 @@ request:
 	spec, err := loader.GetDeliverySpec("test_vendor", "order.paid")
 	assert.Error(t, err, "contract referencing undeclared field should be errored")
 	assert.Nil(t, spec)
+}
+
+// TestConfigLoader_ItemRef_Valid verifies that a valid $each block with
+// correct @{item:...} and @{payload:...} references passes validation.
+func TestConfigLoader_ItemRef_Valid(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Event schema with an array field whose items.properties include `id` and `name`,
+	// plus a top-level user_id field referenced inside the $each block.
+	mustWriteFile(t, tmpDir+"/events/order/events/order.paid.yaml", `
+event_type: "order.paid"
+schema:
+  type: object
+  properties:
+    products:
+      type: array
+      description: "商品列表"
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+          name:
+            type: string
+    user_id:
+      type: string
+`)
+
+	// Route
+	mustWriteFile(t, tmpDir+"/events/order/routes/order.paid.yaml", `
+event_type: "order.paid"
+routes:
+  - vendor_id: "test_vendor"
+`)
+
+	// Vendor config
+	mustWriteFile(t, tmpDir+"/vendors/test_vendor/vendor.yaml", `
+vendor_id: "test_vendor"
+base_url: "http://example.com/api"
+retry_policy:
+  max_attempts: 3
+  base_delay: 1s
+  max_delay: 10s
+  multiplier: 2.0
+  jitter: 0.2
+`)
+
+	// Delivery contract with valid $each block — @{item:id} and @{item:name} both
+	// exist in products.items.properties. Also references payload field.
+	mustWriteFile(t, tmpDir+"/vendors/test_vendor/order/order.paid.yaml", `
+event_type: "order.paid"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      products_mapped:
+        $source: "@{payload:products}"
+        $each:
+          product_id: "@{item:id}"
+          product_name: "@{item:name}"
+          seller: "@{payload:user_id}"
+`)
+
+	loader, err := config.NewLoader(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, loader)
+
+	err = loader.Load(context.Background())
+	require.NoError(t, err, "Load should not fail on valid $each template")
+
+	// Contract should be available
+	spec, err := loader.GetDeliverySpec("test_vendor", "order.paid")
+	assert.NoError(t, err, "valid $each template should not error the contract")
+	assert.NotNil(t, spec)
+}
+
+// TestConfigLoader_ItemRef_Invalid verifies that a $each block referencing
+// a field not declared in the array's items.properties is caught.
+func TestConfigLoader_ItemRef_Invalid(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Event schema with an array field whose items.properties only has `id`
+	mustWriteFile(t, tmpDir+"/events/order/events/order.paid.yaml", `
+event_type: "order.paid"
+schema:
+  type: object
+  properties:
+    products:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+`)
+
+	// Route
+	mustWriteFile(t, tmpDir+"/events/order/routes/order.paid.yaml", `
+event_type: "order.paid"
+routes:
+  - vendor_id: "test_vendor"
+`)
+
+	// Vendor config
+	mustWriteFile(t, tmpDir+"/vendors/test_vendor/vendor.yaml", `
+vendor_id: "test_vendor"
+base_url: "http://example.com/api"
+retry_policy:
+  max_attempts: 3
+  base_delay: 1s
+  max_delay: 10s
+  multiplier: 2.0
+  jitter: 0.2
+`)
+
+	// Delivery contract with invalid $each — @{item:nonexistent} doesn't exist
+	// in products.items.properties
+	mustWriteFile(t, tmpDir+"/vendors/test_vendor/order/order.paid.yaml", `
+event_type: "order.paid"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      products_mapped:
+        $source: "@{payload:products}"
+        $each:
+          product_id: "@{item:nonexistent}"
+`)
+
+	loader, err := config.NewLoader(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, loader)
+
+	// Load should NOT fail — validation doesn't block startup
+	err = loader.Load(context.Background())
+	require.NoError(t, err, "Load should not fail on invalid $each template")
+
+	// Contract referencing undeclared item field should be errored
+	spec, err := loader.GetDeliverySpec("test_vendor", "order.paid")
+	assert.Error(t, err, "contract referencing undeclared item field should be errored")
+	assert.Nil(t, spec)
+}
+
+// TestConfigLoader_ItemRef_PayloadRefOnly verifies that a $each block only
+// using @{payload:...} (not @{item:...}) passes validation even without
+// array items.properties.
+func TestConfigLoader_ItemRef_PayloadRefOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Event schema — products is declared as an array (for $source) but has no
+	// items.properties (or items.properties are irrelevant since $each only
+	// uses @{payload:...} refs).
+	mustWriteFile(t, tmpDir+"/events/order/events/order.paid.yaml", `
+event_type: "order.paid"
+schema:
+  type: object
+  properties:
+    products:
+      type: array
+    user_id:
+      type: string
+    email:
+      type: string
+`)
+
+	// Route
+	mustWriteFile(t, tmpDir+"/events/order/routes/order.paid.yaml", `
+event_type: "order.paid"
+routes:
+  - vendor_id: "test_vendor"
+`)
+
+	// Vendor config
+	mustWriteFile(t, tmpDir+"/vendors/test_vendor/vendor.yaml", `
+vendor_id: "test_vendor"
+base_url: "http://example.com/api"
+retry_policy:
+  max_attempts: 3
+  base_delay: 1s
+  max_delay: 10s
+  multiplier: 2.0
+  jitter: 0.2
+`)
+
+	// Delivery contract with $each, but only uses @{payload:...} inside, not @{item:...}
+	mustWriteFile(t, tmpDir+"/vendors/test_vendor/order/order.paid.yaml", `
+event_type: "order.paid"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      items_mapped:
+        $source: "@{payload:products}"
+        $each:
+          seller: "@{payload:user_id}"
+          contact: "@{payload:email}"
+`)
+
+	loader, err := config.NewLoader(tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, loader)
+
+	// Should always pass — no @{item:...} refs to validate
+	err = loader.Load(context.Background())
+	require.NoError(t, err, "should not fail")
+
+	spec, err := loader.GetDeliverySpec("test_vendor", "order.paid")
+	assert.NoError(t, err, "no item refs means no item validation error")
+	assert.NotNil(t, spec)
 }
 
 func mustWriteFile(t *testing.T, path, content string) {

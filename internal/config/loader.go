@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
 
 	"github.com/rs/zerolog/log"
 	"github.com/xnslong/rc_xnslong/internal/port"
@@ -169,110 +168,6 @@ func (l *Loader) recordError(typ, scope, file string, err error) {
 		Msg("config load failure")
 }
 
-// ---- YAML template walker ----
-
-// yamlSeg is a parsed segment of a path template.
-type yamlSeg struct {
-	isVar   bool
-	name    string
-	fileExt string
-}
-
-// parseYAMLTemplate parses a template like "{biz}/routes/{event}.yaml".
-func parseYAMLTemplate(tmpl string) []yamlSeg {
-	parts := strings.Split(tmpl, "/")
-	segs := make([]yamlSeg, len(parts))
-	for i, part := range parts {
-		if brace := strings.IndexByte(part, '{'); brace >= 0 {
-			closeB := strings.IndexByte(part, '}')
-			segs[i] = yamlSeg{isVar: true, name: part[brace+1 : closeB], fileExt: part[closeB+1:]}
-		} else {
-			segs[i] = yamlSeg{isVar: false, name: part}
-		}
-	}
-	return segs
-}
-
-// walkYAML walks a path template relative to rootDir, finds all matching
-// .yaml files, parses each into T, and calls fn for each.
-func walkYAML[T any](rootDir, tmpl string, fn func(T, string, map[string]string, error)) {
-	segs := parseYAMLTemplate(tmpl)
-	walkYAMLAt[T](rootDir, segs, 0, map[string]string{}, fn)
-}
-
-func walkYAMLAt[T any](dir string, segs []yamlSeg, idx int,
-	vars map[string]string, fn func(T, string, map[string]string, error)) {
-	if idx >= len(segs) {
-		return
-	}
-	seg := segs[idx]
-	isLast := idx == len(segs)-1
-
-	if isLast {
-		if seg.isVar {
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				return
-			}
-			for _, e := range entries {
-				if e.IsDir() || !strings.HasSuffix(e.Name(), seg.fileExt) {
-					continue
-				}
-				v := copyMap(vars)
-				v[seg.name] = strings.TrimSuffix(e.Name(), seg.fileExt)
-				parseYAMLFileAt[T](filepath.Join(dir, e.Name()), v, fn)
-			}
-		} else {
-			parseYAMLFileAt[T](filepath.Join(dir, seg.name), vars, fn)
-		}
-		return
-	}
-
-	if seg.isVar {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			v := copyMap(vars)
-			v[seg.name] = e.Name()
-			walkYAMLAt[T](filepath.Join(dir, e.Name()), segs, idx+1, v, fn)
-		}
-	} else {
-		subDir := filepath.Join(dir, seg.name)
-		if !existsAndIsDir(subDir) {
-			return
-		}
-		walkYAMLAt[T](subDir, segs, idx+1, vars, fn)
-	}
-}
-
-func parseYAMLFileAt[T any](path string, vars map[string]string, fn func(T, string, map[string]string, error)) {
-	var val T
-	data, err := os.ReadFile(path)
-	if err != nil {
-		var zero T
-		fn(zero, path, vars, fmt.Errorf("reading file: %w", err))
-		return
-	}
-	if err := yaml.Unmarshal(data, &val); err != nil {
-		var zero T
-		fn(zero, path, vars, fmt.Errorf("parsing YAML: %w", err))
-		return
-	}
-	fn(val, path, vars, nil)
-}
-
-func copyMap(m map[string]string) map[string]string {
-	r := make(map[string]string, len(m))
-	for k, v := range m {
-		r[k] = v
-	}
-	return r
-}
 
 // Load loads all configuration from the configured paths into memory.
 func (l *Loader) Load(ctx context.Context) error {
@@ -506,66 +401,148 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// extractPayloadRefs extracts all @{payload:...} field references from a template value.
-// It recursively walks maps and arrays to find all string values containing payload references.
-func extractPayloadRefs(val any) []string {
-	var refs []string
-	extractPayloadRefsRecursive(val, &refs)
-	return refs
-}
+// ---- Template field ref validation ----
 
-func extractPayloadRefsRecursive(val any, refs *[]string) {
-	switch v := val.(type) {
-	case string:
-		// Find all @{payload:...} occurrences in the string
-		for i := 0; i < len(v); i++ {
-			if v[i] == '@' && i+10 < len(v) && v[i:i+10] == "@{payload:" {
-				end := strings.Index(v[i:], "}")
-				if end > 0 {
-					ref := v[i+10 : i+end]
-					// Only take the first segment for nested paths (e.g. "a.b.c" -> "a")
-					if dot := strings.IndexByte(ref, '.'); dot > 0 {
-						ref = ref[:dot]
-					}
-					if ref != "" {
-						*refs = append(*refs, ref)
-					}
-					i += end
-				}
+// schemaHasPath checks whether a dotted path exists in a schema properties map.
+func schemaHasPath(props map[string]any, path string) bool {
+	parts := strings.Split(path, ".")
+	for i, part := range parts {
+		if props == nil {
+			return false
+		}
+		val, ok := props[part]
+		if !ok {
+			return false
+		}
+		if i < len(parts)-1 {
+			props, ok = val.(map[string]any)
+			if !ok {
+				return false
 			}
 		}
-	case map[string]any:
-		for _, child := range v {
-			extractPayloadRefsRecursive(child, refs)
-		}
-	case []any:
-		for _, child := range v {
-			extractPayloadRefsRecursive(child, refs)
-		}
 	}
+	return true
 }
 
-// validateCrossConfig checks for consistency between independently-loaded
-// config items. Failures mark the corresponding entry as errored so that
+// extractRefField extracts the first segment of a @{scope:path} reference.
+// For "@{payload:products}" returns "products". For "@{item}" returns "".
+func extractRefField(s, prefix string) string {
+	if !strings.HasPrefix(s, prefix) {
+		return ""
+	}
+	end := strings.IndexByte(s, '}')
+	if end < len(prefix)+1 {
+		return ""
+	}
+	field := s[len(prefix):end]
+	if dot := strings.IndexByte(field, '.'); dot > 0 {
+		field = field[:dot]
+	}
+	return field
+}
+
+// validateString validates @{payload:xxx} and @{item:xxx} in a single string.
+func validateString(s string, rootProps map[string]any, itemPath string) error {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '@' {
+			continue
+		}
+		switch {
+		case i+10 <= len(s) && s[i:i+10] == "@{payload:":
+			field := extractRefField(s[i:], "@{payload:")
+			if field != "" && rootProps[field] == nil {
+				return fmt.Errorf("references payload field %q not declared in event schema", field)
+			}
+			if end := strings.IndexByte(s[i:], '}'); end > 0 {
+				i += end
+			}
+		case i+7 <= len(s) && s[i:i+7] == "@{item:":
+			if itemPath == "" {
+				return fmt.Errorf("@{item:...} reference used outside $each block")
+			}
+			field := extractRefField(s[i:], "@{item:")
+			if field != "" && !schemaHasPath(rootProps, itemPath+"."+field) {
+				return fmt.Errorf("references item field %q not declared in array item schema", field)
+			}
+			if end := strings.IndexByte(s[i:], '}'); end > 0 {
+				i += end
+			}
+		case i+6 <= len(s) && s[i:i+6] == "@{item}":
+			if itemPath == "" {
+				return fmt.Errorf("@{item} reference used outside $each block")
+			}
+			i += 5
+		}
+	}
+	return nil
+}
+
+// deriveItemPath constructs the items.properties schema path from a $source expression.
+func deriveItemPath(sourceExpr, currentItemPath string) string {
+	switch {
+	case strings.HasPrefix(sourceExpr, "@{payload:"):
+		field := extractRefField(sourceExpr, "@{payload:")
+		if field == "" {
+			return ""
+		}
+		return field + ".items.properties"
+	case strings.HasPrefix(sourceExpr, "@{item:"):
+		field := extractRefField(sourceExpr, "@{item:")
+		if field == "" {
+			return ""
+		}
+		if currentItemPath == "" {
+			return field + ".items.properties"
+		}
+		return currentItemPath + "." + field + ".items.properties"
+	case sourceExpr == "@{item}":
+		return currentItemPath
+	}
+	return ""
+}
+
+// validateTemplate recursively validates field references in a template node.
+func validateTemplate(node any, rootProps map[string]any, itemPath string) error {
+	switch v := node.(type) {
+	case string:
+		return validateString(v, rootProps, itemPath)
+	case map[string]any:
+		if srcRaw, hasSource := v["$source"]; hasSource {
+			if srcStr, ok := srcRaw.(string); ok {
+				if err := validateString(srcStr, rootProps, itemPath); err != nil {
+					return err
+				}
+			}
+			if _, hasEach := v["$each"]; hasEach {
+				var newItemPath string
+				if srcStr, ok := srcRaw.(string); ok {
+					newItemPath = deriveItemPath(srcStr, itemPath)
+				}
+				return validateTemplate(v["$each"], rootProps, newItemPath)
+			}
+			return nil
+		}
+		for _, val := range v {
+			if err := validateTemplate(val, rootProps, itemPath); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []any:
+		for _, elem := range v {
+			if err := validateTemplate(elem, rootProps, itemPath); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
 // runtime lookups return the error. Startup is NOT blocked.
 func (l *Loader) validateCrossConfig() {
 
-	// 1. Routing rules reference existing vendors
-	for eventType, lv := range l.routingRules {
-		if lv.Error != nil || lv.Value == nil {
-			continue
-		}
-		for _, rule := range lv.Value {
-			if _, ok := l.vendorConfigs[rule.VendorID]; !ok {
-				l.routingRules[eventType] = &LoadedValue[[]port.RoutingRule]{
-					Error: fmt.Errorf("routing rule references non-existent vendor %q", rule.VendorID),
-				}
-				break
-			}
-		}
-	}
-
-	// 2. Delivery contract template fields exist in event schema
+	// 1. Delivery contract template fields exist in event schema
 	for key, lv := range l.deliveryContracts {
 		if lv.Error != nil || lv.Value == nil {
 			continue
@@ -588,12 +565,19 @@ func (l *Loader) validateCrossConfig() {
 			continue
 		}
 
-		// Extract template field references
-		refs := extractPayloadRefs(spec.Mapping.Body.Template)
-		for _, ref := range refs {
-			if _, exists := props[ref]; !exists {
+		// Validate template field references in body, path, and headers
+		// against event schema, including @{item:...} inside $each blocks.
+		// All three locations share the same props context (no $each here,
+		// so itemProps is nil). A failure in any one marks the contract
+		// unavailable.
+		nodes := []any{spec.Mapping.Body.Template, spec.Mapping.Request.Path}
+		for _, h := range spec.Mapping.Request.Headers {
+			nodes = append(nodes, h)
+		}
+		for _, node := range nodes {
+			if err := validateTemplate(node, props, ""); err != nil {
 				l.deliveryContracts[key] = &LoadedValue[*port.DeliverySpec]{
-					Error: fmt.Errorf("contract references field %q not declared in schema for %q", ref, eventType),
+					Error: fmt.Errorf("contract %s", err),
 				}
 				break
 			}
