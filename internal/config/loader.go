@@ -105,19 +105,19 @@ type LoadedValue[T any] struct {
 // Once loaded, a Loader is immutable — no method modifies its maps after Load
 // returns. This is a deliberate design choice for two reasons:
 //
-// 1. Partial-update consistency: if a future hot-reload mechanism updates
-//    maps incrementally (e.g. reloading vendors first, then routing rules),
-//    a concurrent Get* call could observe an inconsistent cross-section —
-//    e.g. the new route for a vendor whose old delivery contract is still in
-//    place. An atomic pointer swap avoids this entirely: a new Loader is
-//    fully constructed in the background, then swapped in one atomic store.
+//  1. Partial-update consistency: if a future hot-reload mechanism updates
+//     maps incrementally (e.g. reloading vendors first, then routing rules),
+//     a concurrent Get* call could observe an inconsistent cross-section —
+//     e.g. the new route for a vendor whose old delivery contract is still in
+//     place. An atomic pointer swap avoids this entirely: a new Loader is
+//     fully constructed in the background, then swapped in one atomic store.
 //
-// 2. Residual config detection: incremental in-place updates must diff
-//    file-system state against in-memory state to find deletions. Without a
-//    full diff, a config file that was deleted from disk silently remains in
-//    memory, and the system runs with stale config forever. A full rebuild
-//    from scratch (NewLoader → Load → atomic.Swap) guarantees that the
-//    Loader reflects exactly what is on disk — nothing more, nothing less.
+//  2. Residual config detection: incremental in-place updates must diff
+//     file-system state against in-memory state to find deletions. Without a
+//     full diff, a config file that was deleted from disk silently remains in
+//     memory, and the system runs with stale config forever. A full rebuild
+//     from scratch (NewLoader → Load → atomic.Swap) guarantees that the
+//     Loader reflects exactly what is on disk — nothing more, nothing less.
 //
 // Hot-reload pattern:
 //
@@ -195,12 +195,12 @@ func parseYAMLTemplate(tmpl string) []yamlSeg {
 
 // walkYAML walks a path template relative to rootDir, finds all matching
 // .yaml files, parses each into T, and calls fn for each.
-func walkYAML[T any](l *Loader, rootDir, tmpl, typ string, fn func(T, string, map[string]string, error)) {
+func walkYAML[T any](rootDir, tmpl string, fn func(T, string, map[string]string, error)) {
 	segs := parseYAMLTemplate(tmpl)
-	walkYAMLAt[T](l, rootDir, segs, 0, typ, map[string]string{}, fn)
+	walkYAMLAt[T](rootDir, segs, 0, map[string]string{}, fn)
 }
 
-func walkYAMLAt[T any](l *Loader, dir string, segs []yamlSeg, idx int, typ string,
+func walkYAMLAt[T any](dir string, segs []yamlSeg, idx int,
 	vars map[string]string, fn func(T, string, map[string]string, error)) {
 	if idx >= len(segs) {
 		return
@@ -220,10 +220,10 @@ func walkYAMLAt[T any](l *Loader, dir string, segs []yamlSeg, idx int, typ strin
 				}
 				v := copyMap(vars)
 				v[seg.name] = strings.TrimSuffix(e.Name(), seg.fileExt)
-				parseYAMLFileAt[T](l, filepath.Join(dir, e.Name()), typ, v, fn)
+				parseYAMLFileAt[T](filepath.Join(dir, e.Name()), v, fn)
 			}
 		} else {
-			parseYAMLFileAt[T](l, filepath.Join(dir, seg.name), typ, vars, fn)
+			parseYAMLFileAt[T](filepath.Join(dir, seg.name), vars, fn)
 		}
 		return
 	}
@@ -239,18 +239,18 @@ func walkYAMLAt[T any](l *Loader, dir string, segs []yamlSeg, idx int, typ strin
 			}
 			v := copyMap(vars)
 			v[seg.name] = e.Name()
-			walkYAMLAt[T](l, filepath.Join(dir, e.Name()), segs, idx+1, typ, v, fn)
+			walkYAMLAt[T](filepath.Join(dir, e.Name()), segs, idx+1, v, fn)
 		}
 	} else {
 		subDir := filepath.Join(dir, seg.name)
 		if !existsAndIsDir(subDir) {
 			return
 		}
-		walkYAMLAt[T](l, subDir, segs, idx+1, typ, vars, fn)
+		walkYAMLAt[T](subDir, segs, idx+1, vars, fn)
 	}
 }
 
-func parseYAMLFileAt[T any](l *Loader, path, typ string, vars map[string]string, fn func(T, string, map[string]string, error)) {
+func parseYAMLFileAt[T any](path string, vars map[string]string, fn func(T, string, map[string]string, error)) {
 	var val T
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -320,7 +320,7 @@ func (l *Loader) loadDir(dir string) error {
 	}
 
 	if eventsExist {
-		walkYAML[routesFile](l, eventsDir, "{biz}/routes/{event}.yaml", "route",
+		walkYAML[routesFile](eventsDir, "{biz}/routes/{event}.yaml",
 			func(file routesFile, path string, vars map[string]string, err error) {
 				if err != nil {
 					l.recordError("route", vars["event"], path, err)
@@ -336,7 +336,7 @@ func (l *Loader) loadDir(dir string) error {
 				}
 				l.routingRules[file.EventType] = &LoadedValue[[]port.RoutingRule]{Value: rules}
 			})
-		walkYAML[eventSchemaFile](l, eventsDir, "{biz}/events/{event}.yaml", "schema",
+		walkYAML[eventSchemaFile](eventsDir, "{biz}/events/{event}.yaml",
 			func(sf eventSchemaFile, path string, vars map[string]string, err error) {
 				if err != nil {
 					l.recordError("schema", vars["event"], path, err)
@@ -350,7 +350,7 @@ func (l *Loader) loadDir(dir string) error {
 			})
 	}
 	if vendorsExist {
-		walkYAML[vendorConfigFile](l, vendorsDir, "{vendor}/vendor.yaml", "vendor",
+		walkYAML[vendorConfigFile](vendorsDir, "{vendor}/vendor.yaml",
 			func(file vendorConfigFile, path string, vars map[string]string, err error) {
 				if err != nil {
 					vendorID := vars["vendor"]
@@ -388,7 +388,7 @@ func (l *Loader) loadDir(dir string) error {
 				}
 				l.vendorConfigs[vendorID] = &LoadedValue[*port.VendorConfig]{Value: vendor}
 			})
-		walkYAML[deliveryContractFile](l, vendorsDir, "{vendor}/{biz}/{event}.yaml", "contract",
+		walkYAML[deliveryContractFile](vendorsDir, "{vendor}/{biz}/{event}.yaml",
 			func(file deliveryContractFile, path string, vars map[string]string, err error) {
 				if err != nil {
 					l.recordError("contract", vars["vendor"]+"/"+vars["event"], path, err)
@@ -428,15 +428,6 @@ func (l *Loader) loadDir(dir string) error {
 	}
 	return nil
 }
-
-
-
-
-
-
-
-
-
 
 // ---- Helpers ----
 
