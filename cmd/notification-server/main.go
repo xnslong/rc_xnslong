@@ -22,6 +22,26 @@ import (
 	"github.com/xnslong/rc_xnslong/internal/routing"
 )
 
+// Route paths.
+const (
+	routeHealthz    = "/healthz"
+	routeAPIBase    = "/api/v1/notifications"
+	routeAPIByID    = "/api/v1/notifications/{id}"
+)
+
+// Consumer tags for MQ consumers.
+const (
+	consumerWorker  = "worker"
+	consumerTrigger = "trigger"
+)
+
+// Timeout and concurrency settings.
+const (
+	httpClientTimeout = 10 * time.Second
+	shutdownTimeout   = 10 * time.Second
+	workerConcurrency = 5
+)
+
 func main() {
 	// Parse flags
 	configDir := flag.String("config-dir", envOrDefault("CONFIG_DIR", "testdata"), "config directory")
@@ -57,19 +77,19 @@ func main() {
 	engine := mapping.NewEngine()
 
 	// 5. Create delivery message consumer channel
-	deliveryEvents, err := mq.Consume(rabbitmq.DeliveryQueue, "worker", false)
+	deliveryEvents, err := mq.Consume(rabbitmq.DeliveryQueue, consumerWorker, false)
 	if err != nil {
 		log.Fatalf("consume delivery queue: %v", err)
 	}
 
 	// 6. Create and start worker pool
-	worker := delivery.NewWorkerPool(5, delivery.WorkerDeps{
+	worker := delivery.NewWorkerPool(workerConcurrency, delivery.WorkerDeps{
 		DB:     db,
 		MQ:     mq,
 		Config: cfg,
 		Engine: engine,
 		HTTPClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: httpClientTimeout,
 		},
 		DeliveryEvents: deliveryEvents,
 	})
@@ -84,7 +104,7 @@ func main() {
 	// 7. Create dispatcher and start trigger consumer
 	dispatcher := routing.NewDispatcher(db, mq, cfg)
 
-	triggerEvents, err := mq.Consume(rabbitmq.TriggerQueue, "trigger", false)
+	triggerEvents, err := mq.Consume(rabbitmq.TriggerQueue, consumerTrigger, false)
 	if err != nil {
 		log.Fatalf("consume trigger queue: %v", err)
 	}
@@ -113,13 +133,13 @@ func main() {
 
 	// 9. Setup HTTP router
 	r := chi.NewRouter()
-	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	r.Get(routeHealthz, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-	r.Post("/api/v1/notifications", h.Ingest)
-	r.Get("/api/v1/notifications", h.List)
-	r.Get("/api/v1/notifications/{id}", h.GetStatus)
+	r.Post(routeAPIBase, h.Ingest)
+	r.Get(routeAPIBase, h.List)
+	r.Get(routeAPIByID, h.GetStatus)
 
 	// 10. Start HTTP server
 	httpSrv := &http.Server{
@@ -144,7 +164,7 @@ func main() {
 	// Stop worker pool first (wait for inflight deliveries).
 	// Worker.Stop signals workers via closeCh without cancelling their context,
 	// so in-flight DB operations can complete.
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer stopCancel()
 
 	worker.Stop(stopCtx) // signals workers to stop, waits for in-flight

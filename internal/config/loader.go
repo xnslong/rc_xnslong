@@ -13,6 +13,31 @@ import (
 	"github.com/xnslong/rc_xnslong/internal/port"
 )
 
+// Config type string constants used in recordError and loadDir.
+const (
+	configTypeVendor   = "vendor"
+	configTypeContract = "contract"
+	configTypeSchema   = "schema"
+	configTypeRoute    = "route"
+)
+
+// Log attribute constants.
+const (
+	logModuleConfigLoader = "config.loader"
+	logEventLoadError     = "load_config_error"
+	logMsgConfigFailure   = "config load failure"
+)
+
+// Template reference prefixes.
+const (
+	refPrefixPayload = "@{payload:"
+	refPrefixItem    = "@{item:"
+	refItemBare      = "@{item}"
+)
+
+// Schema key constants.
+const schemaKeyProperties = "properties"
+
 // ---- YAML intermediate types ----
 
 // routesFile is the YAML representation of events/{biz}/routes/{event}.yaml.
@@ -149,23 +174,23 @@ func NewLoader(paths ...string) (*Loader, error) {
 // loader continues with partial availability.
 func (l *Loader) recordError(typ, scope, file string, err error) {
 	switch typ {
-	case "vendor":
+	case configTypeVendor:
 		l.vendorConfigs[scope] = &LoadedValue[*port.VendorConfig]{Error: err}
-	case "contract":
+	case configTypeContract:
 		l.deliveryContracts[scope] = &LoadedValue[*port.DeliverySpec]{Error: err}
-	case "schema":
+	case configTypeSchema:
 		l.eventSchemas[scope] = &LoadedValue[map[string]any]{Error: err}
-	case "route":
+	case configTypeRoute:
 		l.routingRules[scope] = &LoadedValue[[]port.RoutingRule]{Error: err}
 	}
 
 	log.Error().
-		Str("module", "config.loader").
+		Str("module", logModuleConfigLoader).
 		Str("event", "load_"+typ+"_error").
 		Str("file", file).
 		Str("scope", scope).
 		Err(err).
-		Msg("config load failure")
+		Msg(logMsgConfigFailure)
 }
 
 
@@ -218,11 +243,11 @@ func (l *Loader) loadDir(dir string) error {
 		walkYAML[routesFile](eventsDir, "{biz}/routes/{event}.yaml",
 			func(file routesFile, path string, vars map[string]string, err error) {
 				if err != nil {
-					l.recordError("route", vars["event"], path, err)
+					l.recordError(configTypeRoute, vars["event"], path, err)
 					return
 				}
 				if file.EventType == "" {
-					l.recordError("route", vars["event"], path, fmt.Errorf("missing event_type"))
+					l.recordError(configTypeRoute, vars["event"], path, fmt.Errorf("missing event_type"))
 					return
 				}
 				var rules []port.RoutingRule
@@ -234,11 +259,11 @@ func (l *Loader) loadDir(dir string) error {
 		walkYAML[eventSchemaFile](eventsDir, "{biz}/events/{event}.yaml",
 			func(sf eventSchemaFile, path string, vars map[string]string, err error) {
 				if err != nil {
-					l.recordError("schema", vars["event"], path, err)
+					l.recordError(configTypeSchema, vars["event"], path, err)
 					return
 				}
 				if sf.EventType == "" || sf.Schema == nil {
-					l.recordError("schema", vars["event"], path, fmt.Errorf("missing event_type or schema"))
+					l.recordError(configTypeSchema, vars["event"], path, fmt.Errorf("missing event_type or schema"))
 					return
 				}
 				l.eventSchemas[sf.EventType] = &LoadedValue[map[string]any]{Value: sf.Schema}
@@ -249,18 +274,18 @@ func (l *Loader) loadDir(dir string) error {
 			func(file vendorConfigFile, path string, vars map[string]string, err error) {
 				if err != nil {
 					vendorID := vars["vendor"]
-					l.recordError("vendor", vendorID, path, err)
+					l.recordError(configTypeVendor, vendorID, path, err)
 					return
 				}
 				vendorID := vars["vendor"]
 				baseDelayMs, err := parseDurationToMs(file.RetryPolicy.BaseDelay)
 				if err != nil {
-					l.recordError("vendor", vendorID, path, fmt.Errorf("parsing base_delay: %w", err))
+					l.recordError(configTypeVendor, vendorID, path, fmt.Errorf("parsing base_delay: %w", err))
 					return
 				}
 				maxDelayMs, err := parseDurationToMs(file.RetryPolicy.MaxDelay)
 				if err != nil {
-					l.recordError("vendor", vendorID, path, fmt.Errorf("parsing max_delay: %w", err))
+					l.recordError(configTypeVendor, vendorID, path, fmt.Errorf("parsing max_delay: %w", err))
 					return
 				}
 				vendor := &port.VendorConfig{
@@ -286,7 +311,7 @@ func (l *Loader) loadDir(dir string) error {
 		walkYAML[deliveryContractFile](vendorsDir, "{vendor}/{biz}/{event}.yaml",
 			func(file deliveryContractFile, path string, vars map[string]string, err error) {
 				if err != nil {
-					l.recordError("contract", vars["vendor"]+"/"+vars["event"], path, err)
+					l.recordError(configTypeContract, vars["vendor"]+"/"+vars["event"], path, err)
 					return
 				}
 				vendorID := vars["vendor"]
@@ -312,7 +337,7 @@ func (l *Loader) loadDir(dir string) error {
 				if file.RetryPolicy != nil {
 					retry, err := convertVendorRetryFile(file.RetryPolicy)
 					if err != nil {
-						l.recordError("contract", scope, path, fmt.Errorf("contract retry_policy: %w", err))
+						l.recordError(configTypeContract, scope, path, fmt.Errorf("contract retry_policy: %w", err))
 						return
 					}
 					spec.Retry = retry
@@ -448,26 +473,26 @@ func validateString(s string, rootProps map[string]any, itemPath string) error {
 			continue
 		}
 		switch {
-		case i+10 <= len(s) && s[i:i+10] == "@{payload:":
-			field := extractRefField(s[i:], "@{payload:")
+		case i+10 <= len(s) && s[i:i+len(refPrefixPayload)] == refPrefixPayload:
+			field := extractRefField(s[i:], refPrefixPayload)
 			if field != "" && rootProps[field] == nil {
 				return fmt.Errorf("references payload field %q not declared in event schema", field)
 			}
 			if end := strings.IndexByte(s[i:], '}'); end > 0 {
 				i += end
 			}
-		case i+7 <= len(s) && s[i:i+7] == "@{item:":
+		case i+7 <= len(s) && s[i:i+len(refPrefixItem)] == refPrefixItem:
 			if itemPath == "" {
 				return fmt.Errorf("@{item:...} reference used outside $each block")
 			}
-			field := extractRefField(s[i:], "@{item:")
+			field := extractRefField(s[i:], refPrefixItem)
 			if field != "" && !schemaHasPath(rootProps, itemPath+"."+field) {
 				return fmt.Errorf("references item field %q not declared in array item schema", field)
 			}
 			if end := strings.IndexByte(s[i:], '}'); end > 0 {
 				i += end
 			}
-		case i+6 <= len(s) && s[i:i+6] == "@{item}":
+		case i+6 <= len(s) && s[i:i+len(refItemBare)] == refItemBare:
 			if itemPath == "" {
 				return fmt.Errorf("@{item} reference used outside $each block")
 			}
@@ -480,13 +505,13 @@ func validateString(s string, rootProps map[string]any, itemPath string) error {
 // deriveItemPath constructs the items.properties schema path from a $source expression.
 func deriveItemPath(sourceExpr, currentItemPath string) string {
 	switch {
-	case strings.HasPrefix(sourceExpr, "@{payload:"):
+	case strings.HasPrefix(sourceExpr, refPrefixPayload):
 		field := extractRefField(sourceExpr, "@{payload:")
 		if field == "" {
 			return ""
 		}
 		return field + ".items.properties"
-	case strings.HasPrefix(sourceExpr, "@{item:"):
+	case strings.HasPrefix(sourceExpr, refPrefixItem):
 		field := extractRefField(sourceExpr, "@{item:")
 		if field == "" {
 			return ""
@@ -495,7 +520,7 @@ func deriveItemPath(sourceExpr, currentItemPath string) string {
 			return field + ".items.properties"
 		}
 		return currentItemPath + "." + field + ".items.properties"
-	case sourceExpr == "@{item}":
+	case sourceExpr == refItemBare:
 		return currentItemPath
 	}
 	return ""
@@ -507,18 +532,18 @@ func validateTemplate(node any, rootProps map[string]any, itemPath string) error
 	case string:
 		return validateString(v, rootProps, itemPath)
 	case map[string]any:
-		if srcRaw, hasSource := v["$source"]; hasSource {
+		if srcRaw, hasSource := v[port.DirectiveSource]; hasSource {
 			if srcStr, ok := srcRaw.(string); ok {
 				if err := validateString(srcStr, rootProps, itemPath); err != nil {
 					return err
 				}
 			}
-			if _, hasEach := v["$each"]; hasEach {
+			if _, hasEach := v[port.DirectiveEach]; hasEach {
 				var newItemPath string
 				if srcStr, ok := srcRaw.(string); ok {
 					newItemPath = deriveItemPath(srcStr, itemPath)
 				}
-				return validateTemplate(v["$each"], rootProps, newItemPath)
+				return validateTemplate(v[port.DirectiveEach], rootProps, newItemPath)
 			}
 			return nil
 		}
@@ -559,7 +584,7 @@ func (l *Loader) validateCrossConfig() {
 		}
 
 		schemaMap := schemaLV.Value
-		propsRaw, _ := schemaMap["properties"]
+		propsRaw, _ := schemaMap[schemaKeyProperties]
 		props, ok := propsRaw.(map[string]any)
 		if !ok || props == nil {
 			continue

@@ -7,6 +7,8 @@ import (
 	"sync"
 )
 
+const validationRootPath = "payload"
+
 // schemaValidator validates payloads against JSON Schema definitions.
 type schemaValidator struct {
 	mu    sync.Mutex
@@ -26,7 +28,7 @@ func (v *schemaValidator) validate(schemaDef []byte, payload map[string]any) []V
 	if err := json.Unmarshal(schemaDef, &schema); err != nil {
 		return []ValidationError{{Field: "", Message: fmt.Sprintf("invalid schema definition: %v", err)}}
 	}
-	return validateNode(schema, payload, "payload")
+	return validateNode(schema, payload, validationRootPath)
 }
 
 // validateMap checks the payload against the given JSON Schema map.
@@ -53,7 +55,7 @@ func (v *schemaValidator) validateMap(schemaMap map[string]any, payload map[stri
 		v.mu.Unlock()
 	}
 
-	return validateNode(*node, payload, "payload")
+	return validateNode(*node, payload, validationRootPath)
 }
 
 // schemaNode represents a simplified JSON Schema node for MVP validation.

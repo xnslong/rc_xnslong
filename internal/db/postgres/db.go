@@ -9,6 +9,13 @@ import (
 	"github.com/xnslong/rc_xnslong/internal/model"
 )
 
+// Pagination defaults for list queries.
+const (
+	defaultPage     = 1
+	defaultPageSize = 20
+	maxPageSize     = 100
+)
+
 type Client struct {
 	pool *pgxpool.Pool
 }
@@ -194,13 +201,13 @@ func (c *Client) GetDeliveryTasksByNotificationID(ctx context.Context, notificat
 func (c *Client) ListNotifications(ctx context.Context, callerID, event string, page, pageSize int) ([]*model.Notification, int, error) {
 	// Validate page size
 	if pageSize <= 0 {
-		pageSize = 20
+		pageSize = defaultPageSize
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	if pageSize > maxPageSize {
+		pageSize = maxPageSize
 	}
-	if page < 1 {
-		page = 1
+	if page < defaultPage {
+		page = defaultPage
 	}
 	offset := (page - 1) * pageSize
 

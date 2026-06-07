@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/rs/zerolog"
+	"github.com/xnslong/rc_xnslong/internal/model"
 	"github.com/xnslong/rc_xnslong/internal/port"
 )
 
@@ -40,7 +41,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, notificationID string) error 
 	}
 
 	// 2. Skip if the notification is not pending (idempotency)
-	if notif.Status != "PENDING" {
+	if notif.Status != model.NotificationStatusPending {
 		log.Info().Str("notification_id", notificationID).Str("status", notif.Status).Msg("notification already processed, skipping dispatch")
 		return nil
 	}
@@ -49,7 +50,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, notificationID string) error 
 	rules, err := d.cfg.GetRoutingRules(notif.EventType)
 	if err != nil || len(rules) == 0 {
 		log.Warn().Str("notification_id", notificationID).Str("event_type", notif.EventType).Msg("no routing rules matched, marking notification as FAILED")
-		if err := d.db.UpdateNotificationStatus(ctx, notificationID, "FAILED"); err != nil {
+		if err := d.db.UpdateNotificationStatus(ctx, notificationID, model.NotificationStatusFailed); err != nil {
 			log.Error().Err(err).Str("notification_id", notificationID).Msg("failed to update notification status to FAILED")
 			return err
 		}
@@ -72,7 +73,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, notificationID string) error 
 	}
 
 	// 6.5 Update notification status to DELIVERING
-	if err := d.db.UpdateNotificationStatus(ctx, notificationID, "DELIVERING"); err != nil {
+	if err := d.db.UpdateNotificationStatus(ctx, notificationID, model.NotificationStatusDelivering); err != nil {
 		log.Error().Err(err).Str("notification_id", notificationID).Msg("failed to update notification status to DELIVERING")
 		return err
 	}

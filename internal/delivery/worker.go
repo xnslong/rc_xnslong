@@ -18,9 +18,17 @@ import (
 
 // Status constants for delivery task life cycle.
 const (
-	StatusDelivering = "DELIVERING"
-	StatusSucceeded  = "SUCCEEDED"
-	StatusDeadLetter = "DEAD_LETTER"
+	StatusDelivering = model.DeliveryTaskStatusDelivering
+	StatusSucceeded  = model.DeliveryTaskStatusSucceeded
+	StatusDeadLetter = model.DeliveryTaskStatusDeadLetter
+)
+
+// HTTP status code ranges for vendor response judgment.
+const (
+	httpStatusMinSuccess = 200
+	httpStatusMaxSuccess = 300
+	httpStatusServerErr  = 500
+	httpStatusRateLimit  = 429
 )
 
 // RequestBuilder builds HTTP requests for vendor API calls.
@@ -65,7 +73,7 @@ func NewWorkerPool(concurrency int, deps WorkerDeps) *WorkerPool {
 // Each worker independently consumes from the shared delivery queue.
 func (p *WorkerPool) Start(ctx context.Context) error {
 	if p.deps.DeliveryEvents == nil {
-		return fmt.Errorf("DeliveryEvents channel is nil")
+		return fmt.Errorf("delivery events channel is nil")
 	}
 
 	ctx, p.cancel = context.WithCancel(ctx)
@@ -215,11 +223,11 @@ func (p *WorkerPool) ProcessMessage(ctx context.Context, deliveryTaskID string) 
 }
 
 func isHTTPSuccess(resp *http.Response) bool {
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	return resp.StatusCode >= httpStatusMinSuccess && resp.StatusCode < httpStatusMaxSuccess
 }
 
 func isHTTPRetryable(resp *http.Response) bool {
-	return resp.StatusCode >= 500 || resp.StatusCode == 429
+	return resp.StatusCode >= httpStatusServerErr || resp.StatusCode == httpStatusRateLimit
 }
 
 func (p *WorkerPool) handleDeliverySuccess(ctx context.Context, task *model.DeliveryTask) error {
@@ -293,11 +301,11 @@ func (p *WorkerPool) resolveNotificationStatus(ctx context.Context, notification
 
 	// All tasks have reached a terminal state — determine notification status
 	if deadLetter == 0 {
-		err = p.deps.DB.UpdateNotificationStatus(ctx, notificationID, "SUCCEEDED")
+		err = p.deps.DB.UpdateNotificationStatus(ctx, notificationID, model.NotificationStatusSucceeded)
 	} else if succeeded == 0 {
-		err = p.deps.DB.UpdateNotificationStatus(ctx, notificationID, "FAILED")
+		err = p.deps.DB.UpdateNotificationStatus(ctx, notificationID, model.NotificationStatusFailed)
 	} else {
-		err = p.deps.DB.UpdateNotificationStatus(ctx, notificationID, "PARTIALLY_FAILED")
+		err = p.deps.DB.UpdateNotificationStatus(ctx, notificationID, model.NotificationStatusPartiallyFailed)
 	}
 	if err != nil {
 		log.Printf("failed to update notification %s status: %v", notificationID, err)

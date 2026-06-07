@@ -18,6 +18,68 @@ import (
 
 const defaultCallerID = "system"
 
+// Error codes returned in API error responses.
+const (
+	errCodeInvalidRequest         = "INVALID_REQUEST"
+	errCodeEventNotFound          = "EVENT_NOT_FOUND"
+	errCodeSchemaValidationFailed = "SCHEMA_VALIDATION_FAILED"
+	errCodeServiceUnavailable     = "SERVICE_UNAVAILABLE"
+	errCodeNotFound               = "NOT_FOUND"
+)
+
+// Chinese error messages for API responses.
+const (
+	msgInvalidRequestBody  = "请求体格式错误"
+	msgInvalidPayload      = "请求体不合法"
+	msgEventRequired       = "event 不能为空"
+	msgEventNotFound       = "事件类型未注册"
+	msgSchemaFailed        = "payload 校验失败"
+	msgServiceUnavail      = "服务暂时不可用"
+	msgMissingID           = "缺少 id"
+	msgNotificationMissing = "通知不存在"
+)
+
+// API response JSON field keys.
+const (
+	respFieldData             = "data"
+	respFieldNotificationID   = "notification_id"
+	respFieldCallerID         = "caller_id"
+	respFieldEvent            = "event"
+	respFieldStatus           = "status"
+	respFieldPayload          = "payload"
+	respFieldDeliveryResults  = "delivery_results"
+	respFieldCreatedAt        = "created_at"
+	respFieldUpdatedAt        = "updated_at"
+	respFieldItems            = "items"
+	respFieldTotal            = "total"
+	respFieldPage             = "page"
+	respFieldPageSize         = "page_size"
+	respFieldTotalPages       = "total_pages"
+	respFieldVendorID         = "vendor_id"
+	respFieldRetryCount       = "retry_count"
+	respFieldLastError        = "last_error"
+)
+
+// API error response JSON field keys.
+const (
+	errFieldError   = "error"
+	errFieldCode    = "code"
+	errFieldMessage = "message"
+	errFieldDetails = "details"
+)
+
+const (
+	defaultPage     = 1
+	defaultPageSize = 20
+	maxPageSize     = 100
+	idempotentKeyBytes = 16
+)
+
+const (
+	headerContentType = "Content-Type"
+	contentTypeJSON   = "application/json"
+)
+
 // Handler handles HTTP requests for notification ingestion.
 type Handler struct {
 	svc *ingestion.Service
@@ -37,18 +99,18 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "请求体格式错误")
+		writeError(w, http.StatusBadRequest, errCodeInvalidRequest, msgInvalidRequestBody)
 		return
 	}
 
 	// Validate request body is an object
 	if req.Event == "" && req.Payload == nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "请求体不合法")
+		writeError(w, http.StatusBadRequest, errCodeInvalidRequest, msgInvalidPayload)
 		return
 	}
 
 	if req.Event == "" {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "event 不能为空")
+		writeError(w, http.StatusBadRequest, errCodeInvalidRequest, msgEventRequired)
 		return
 	}
 
@@ -58,7 +120,7 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-generate idempotent_key if not provided
 	if req.IdempotentKey == "" {
-		req.IdempotentKey = randomHex(16)
+		req.IdempotentKey = randomHex(idempotentKeyBytes)
 	}
 
 	params := model.UpsertParams{
@@ -71,27 +133,27 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 	notification, err := h.svc.Submit(r.Context(), params)
 	if err != nil {
 		if ingestion.IsErrEventNotFound(err) {
-			writeError(w, http.StatusUnprocessableEntity, "EVENT_NOT_FOUND", "事件类型未注册")
+			writeError(w, http.StatusUnprocessableEntity, errCodeEventNotFound, msgEventNotFound)
 			return
 		}
 		if ingestion.IsSchemaValidationError(err) {
 			details := ingestion.GetSchemaValidationDetails(err)
-			writeErrorWithDetails(w, http.StatusUnprocessableEntity, "SCHEMA_VALIDATION_FAILED", "payload 校验失败", details)
+			writeErrorWithDetails(w, http.StatusUnprocessableEntity, errCodeSchemaValidationFailed, msgSchemaFailed, details)
 			return
 		}
 		log.Error().Err(err).Msg("ingestion service error")
-		writeError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "服务暂时不可用")
+		writeError(w, http.StatusServiceUnavailable, errCodeServiceUnavailable, msgServiceUnavail)
 		return
 	}
 
 	resp := map[string]any{
-		"data": map[string]any{
-			"notification_id": notification.ID,
-			"status":          notification.Status,
-			"created_at":      notification.CreatedAt.Format(time.RFC3339),
+		respFieldData: map[string]any{
+			respFieldNotificationID: notification.ID,
+			respFieldStatus:          notification.Status,
+			respFieldCreatedAt:      notification.CreatedAt.Format(time.RFC3339),
 		},
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, contentTypeJSON)
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(resp)
 }
@@ -100,13 +162,13 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "缺少 id")
+		writeError(w, http.StatusBadRequest, errCodeInvalidRequest, msgMissingID)
 		return
 	}
 
 	notification, err := h.svc.GetByID(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", "通知不存在")
+		writeError(w, http.StatusNotFound, errCodeNotFound, msgNotificationMissing)
 		return
 	}
 
@@ -118,28 +180,28 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	deliveryResults := make([]map[string]any, 0, len(tasks))
 	for _, t := range tasks {
 		deliveryResults = append(deliveryResults, map[string]any{
-			"vendor_id":    t.VendorID,
-			"status":       t.Status,
-			"retry_count":  t.RetryCount,
-			"last_error":   t.LastError,
-			"event":        t.EventType,
-			"updated_at":   t.UpdatedAt.Format(time.RFC3339),
+			respFieldVendorID:    t.VendorID,
+			respFieldStatus:       t.Status,
+			respFieldRetryCount:  t.RetryCount,
+			respFieldLastError:   t.LastError,
+			respFieldEvent:        t.EventType,
+			respFieldUpdatedAt:   t.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 
 	resp := map[string]any{
-		"data": map[string]any{
-			"notification_id": notification.ID,
-			"caller_id":       notification.CallerID,
-			"event":           notification.EventType,
-			"status":          notification.Status,
-			"payload":         notification.Payload,
-			"delivery_results": deliveryResults,
-			"created_at":      notification.CreatedAt.Format(time.RFC3339),
-			"updated_at":      notification.UpdatedAt.Format(time.RFC3339),
+		respFieldData: map[string]any{
+			respFieldNotificationID: notification.ID,
+			respFieldCallerID:       notification.CallerID,
+			respFieldEvent:           notification.EventType,
+			respFieldStatus:          notification.Status,
+			respFieldPayload:         notification.Payload,
+			respFieldDeliveryResults: deliveryResults,
+			respFieldCreatedAt:      notification.CreatedAt.Format(time.RFC3339),
+			respFieldUpdatedAt:      notification.UpdatedAt.Format(time.RFC3339),
 		},
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, contentTypeJSON)
 	json.NewEncoder(w).Encode(resp)
 }
 
@@ -150,62 +212,62 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 1 {
-		page = 1
+		page = defaultPage
 	}
 
 	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
 	if pageSize <= 0 {
-		pageSize = 20
+		pageSize = defaultPageSize
 	}
 	if pageSize > 100 {
-		pageSize = 100
+		pageSize = maxPageSize
 	}
 
 	notifications, total, err := h.svc.List(r.Context(), callerID, event, page, pageSize)
 	if err != nil {
 		log.Error().Err(err).Msg("list notifications error")
-		writeError(w, http.StatusInternalServerError, "SERVICE_UNAVAILABLE", "服务暂时不可用")
+		writeError(w, http.StatusInternalServerError, errCodeServiceUnavailable, msgServiceUnavail)
 		return
 	}
 
 	items := make([]map[string]any, 0, len(notifications))
 	for _, n := range notifications {
 		items = append(items, map[string]any{
-			"notification_id": n.ID,
-			"caller_id":       n.CallerID,
-			"event":           n.EventType,
-			"status":          n.Status,
-			"created_at":      n.CreatedAt.Format(time.RFC3339),
-			"updated_at":      n.UpdatedAt.Format(time.RFC3339),
+			respFieldNotificationID: n.ID,
+			respFieldCallerID:       n.CallerID,
+			respFieldEvent:           n.EventType,
+			respFieldStatus:          n.Status,
+			respFieldCreatedAt:      n.CreatedAt.Format(time.RFC3339),
+			respFieldUpdatedAt:      n.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 
 	totalPages := (total + pageSize - 1) / pageSize
 	if totalPages < 1 {
-		totalPages = 1
+		totalPages = defaultPage
 	}
 
 	resp := map[string]any{
-		"data": map[string]any{
-			"items":       items,
-			"total":       total,
-			"page":        page,
-			"page_size":   pageSize,
-			"total_pages": totalPages,
+		respFieldData: map[string]any{
+			respFieldItems:       items,
+			respFieldTotal:       total,
+			respFieldPage:        page,
+			respFieldPageSize:   pageSize,
+			respFieldTotalPages: totalPages,
 		},
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, contentTypeJSON)
 	json.NewEncoder(w).Encode(resp)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	body := map[string]any{
-		"error": map[string]any{
-			"code":    code,
-			"message": message,
+		errFieldError: map[string]any{
+			errFieldCode:    code,
+			errFieldMessage: message,
 		},
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, contentTypeJSON)
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(body)
 }
@@ -219,13 +281,13 @@ func randomHex(n int) string {
 
 func writeErrorWithDetails(w http.ResponseWriter, status int, code, message string, details any) {
 	body := map[string]any{
-		"error": map[string]any{
-			"code":    code,
-			"message": message,
-			"details": details,
+		errFieldError: map[string]any{
+			errFieldCode:    code,
+			errFieldMessage: message,
+			errFieldDetails: details,
 		},
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, contentTypeJSON)
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(body)
 }

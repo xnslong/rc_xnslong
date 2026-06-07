@@ -14,6 +14,42 @@ import (
 	"github.com/xnslong/rc_xnslong/internal/port"
 )
 
+// Body type constants.
+const (
+	bodyTypeNone    = "none"
+	bodyTypeRaw     = "raw"
+	bodyTypeMapping = "mapping"
+	bodyTypePlugin  = "plugin"
+)
+
+// Auth type constants.
+const (
+	authTypeBearer = "bearer"
+	authTypeBasic  = "basic"
+
+	authConfigKeyToken = "token"
+	authConfigKeyUser  = "user"
+	authConfigKeyPass  = "pass"
+
+	authHeaderName  = "Authorization"
+	authBearerPrefix = "Bearer "
+	authBasicPrefix  = "Basic "
+)
+
+// Scope constants for @{payload:...} and @{item:...} references.
+const (
+	scopePayload = "payload"
+	scopeItem    = "item"
+)
+
+// Type name constants for convertType.
+const (
+	typeNameString  = "string"
+	typeNameInteger = "integer"
+	typeNameNumber  = "number"
+	typeNameBoolean = "boolean"
+)
+
 // resolveRefRe matches @{scope:path} references where scope is payload or item.
 // The :path part is optional — @{item} (bare) references the current element
 // value itself (for primitive arrays), while @{item:field} references a field
@@ -37,9 +73,9 @@ type resolveContext struct {
 
 func (c resolveContext) lookup(scope string) map[string]any {
 	switch scope {
-	case "payload":
+	case scopePayload:
 		return c.payload
-	case "item":
+	case scopeItem:
 		if m, ok := c.item.(map[string]any); ok {
 			return m
 		}
@@ -106,15 +142,15 @@ func (e *Engine) BuildRequest(vendorCfg *port.VendorConfig, mappingCfg *port.Map
 	// auth-related headers that were set in the contract)
 	if vendorCfg.Auth != nil {
 		switch vendorCfg.Auth.Type {
-		case "bearer":
-			if token, ok := vendorCfg.Auth.Config["token"].(string); ok {
-				req.Header.Set("Authorization", "Bearer "+token)
+		case authTypeBearer:
+			if token, ok := vendorCfg.Auth.Config[authConfigKeyToken].(string); ok {
+				req.Header.Set(authHeaderName, authBearerPrefix+token)
 			}
-		case "basic":
-			if user, ok := vendorCfg.Auth.Config["user"].(string); ok {
-				if pass, ok := vendorCfg.Auth.Config["pass"].(string); ok {
+		case authTypeBasic:
+			if user, ok := vendorCfg.Auth.Config[authConfigKeyUser].(string); ok {
+				if pass, ok := vendorCfg.Auth.Config[authConfigKeyPass].(string); ok {
 					auth := tostring(user) + ":" + tostring(pass)
-					req.Header.Set("Authorization", "Basic "+auth)
+					req.Header.Set(authHeaderName, authBasicPrefix+auth)
 				}
 			}
 		}
@@ -130,18 +166,18 @@ func (e *Engine) buildBody(bodyCfg *port.BodyConfig, ctx resolveContext) ([]byte
 		return nil, nil
 	}
 	switch bodyCfg.Type {
-	case "none":
+	case bodyTypeNone:
 		return nil, nil
-	case "raw":
+	case bodyTypeRaw:
 		tmplBytes, err := json.Marshal(bodyCfg.Template)
 		if err != nil {
 			return nil, fmt.Errorf("raw body marshal: %w", err)
 		}
 		tmplStr := string(tmplBytes)
 		return e.resolveRawBody(tmplStr, ctx)
-	case "mapping":
+	case bodyTypeMapping:
 		return e.resolveMappingBody(bodyCfg.Template, ctx)
-	case "plugin":
+	case bodyTypePlugin:
 		return nil, fmt.Errorf("mapper plugin not supported yet")
 	default:
 		return nil, fmt.Errorf("unknown body type: %s", bodyCfg.Type)
@@ -175,7 +211,7 @@ func (e *Engine) resolveNode(node any, ctx resolveContext) (any, error) {
 		return e.resolveField(v, ctx)
 	case map[string]any:
 		// Check for $source directive (covers $source, $type, $format, $each)
-		if _, ok := v["$source"]; ok {
+		if _, ok := v[port.DirectiveSource]; ok {
 			return e.resolveSourceDirective(v, ctx)
 		}
 		// Regular map: resolve each value, handle $$ prefix escaping
@@ -212,12 +248,12 @@ func (e *Engine) resolveNode(node any, ctx resolveContext) (any, error) {
 // $type conversion happens before $format conversion.
 func (e *Engine) resolveSourceDirective(v map[string]any, ctx resolveContext) (any, error) {
 	// Scenario A: $source + $each → array traversal mapping
-	if _, ok := v["$each"]; ok {
+	if _, ok := v[port.DirectiveEach]; ok {
 		return e.resolveEachDirective(v, ctx)
 	}
 
 	// Scenario B: $source (optional $type/$format) → single value extraction + conversion
-	sourceExpr, ok := v["$source"].(string)
+	sourceExpr, ok := v[port.DirectiveSource].(string)
 	if !ok {
 		return nil, fmt.Errorf("$source must be a string")
 	}
@@ -229,7 +265,7 @@ func (e *Engine) resolveSourceDirective(v map[string]any, ctx resolveContext) (a
 	}
 
 	// Type conversion before format conversion
-	if typeNameVal, ok := v["$type"]; ok {
+	if typeNameVal, ok := v[port.DirectiveType]; ok {
 		typeName, ok := typeNameVal.(string)
 		if !ok {
 			return nil, fmt.Errorf("$type must be a string")
@@ -242,7 +278,7 @@ func (e *Engine) resolveSourceDirective(v map[string]any, ctx resolveContext) (a
 	}
 
 	// Format conversion (only after type conversion)
-	if formatVal, ok := v["$format"]; ok {
+	if formatVal, ok := v[port.DirectiveFormat]; ok {
 		format, ok := formatVal.(string)
 		if !ok {
 			return nil, fmt.Errorf("$format must be a string")
@@ -258,7 +294,7 @@ func (e *Engine) resolveSourceDirective(v map[string]any, ctx resolveContext) (a
 // creates an extended context with the element as ctx.item and applies
 // the $each template mapping.
 func (e *Engine) resolveEachDirective(v map[string]any, ctx resolveContext) (any, error) {
-	sourceExpr, ok := v["$source"].(string)
+	sourceExpr, ok := v[port.DirectiveSource].(string)
 	if !ok {
 		return nil, fmt.Errorf("$source must be a string for $each")
 	}
@@ -273,7 +309,7 @@ func (e *Engine) resolveEachDirective(v map[string]any, ctx resolveContext) (any
 		return nil, fmt.Errorf("$source %q must resolve to an array, got %T", sourceExpr, srcRaw)
 	}
 
-	eachTemplate, ok := v["$each"]
+	eachTemplate, ok := v[port.DirectiveEach]
 	if !ok {
 		return nil, fmt.Errorf("$each directive missing")
 	}
@@ -349,9 +385,9 @@ func (e *Engine) resolveField(expr string, ctx resolveContext) (any, error) {
 // For "payload" returns ctx.payload as-is.
 func (e *Engine) getScopeValue(scope string, ctx resolveContext) any {
 	switch scope {
-	case "payload":
+	case scopePayload:
 		return ctx.payload
-	case "item":
+	case scopeItem:
 		return ctx.item
 	default:
 		return nil
@@ -387,9 +423,9 @@ func getNestedField(data map[string]any, path string) any {
 // Supported target types: string, integer, number, boolean.
 func convertType(val any, typeName string) (any, error) {
 	switch typeName {
-	case "string":
+	case typeNameString:
 		return tostring(val), nil
-	case "integer":
+	case typeNameInteger:
 		switch v := val.(type) {
 		case int:
 			return int64(v), nil
@@ -406,7 +442,7 @@ func convertType(val any, typeName string) (any, error) {
 		default:
 			return nil, fmt.Errorf("cannot convert %T to integer", val)
 		}
-	case "number":
+	case typeNameNumber:
 		switch v := val.(type) {
 		case int:
 			return v, nil
@@ -423,7 +459,7 @@ func convertType(val any, typeName string) (any, error) {
 		default:
 			return nil, fmt.Errorf("cannot convert %T to number", val)
 		}
-	case "boolean":
+	case typeNameBoolean:
 		switch v := val.(type) {
 		case bool:
 			return v, nil

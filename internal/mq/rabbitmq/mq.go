@@ -8,6 +8,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/rs/zerolog/log"
+	"github.com/xnslong/rc_xnslong/internal/model"
 )
 
 const (
@@ -17,6 +18,14 @@ const (
 	deliveryQueue    = "notification.delivery.q"
 	dlxExchange      = "notification.dlx"
 	retryQueue       = "notification.retry.q"
+)
+
+// Content type and header constants.
+const (
+	contentTypeTextPlain   = "text/plain"
+	contentTypeApplicationJSON = "application/json"
+	headerOriginalRoutingKey  = "x-original-routing-key"
+	defaultRoutingKey         = "delivery"
 )
 
 type Client struct {
@@ -107,7 +116,7 @@ func (c *Client) Close() {
 
 func (c *Client) PublishTrigger(ctx context.Context, notificationID string) error {
 	msg := amqp.Publishing{
-		ContentType: "text/plain",
+		ContentType: contentTypeTextPlain,
 		Body:        []byte(notificationID),
 	}
 	if err := c.ch.PublishWithContext(ctx, triggerExchange, "", false, false, msg); err != nil {
@@ -119,15 +128,15 @@ func (c *Client) PublishTrigger(ctx context.Context, notificationID string) erro
 
 func (c *Client) PublishDelivery(ctx context.Context, vendorID, deliveryTaskID string) error {
 	body, err := json.Marshal(map[string]string{
-		"delivery_task_id": deliveryTaskID,
-		"vendor_id":        vendorID,
+		model.FieldDeliveryTaskID: deliveryTaskID,
+		model.FieldVendorID:        vendorID,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal delivery message: %w", err)
 	}
 
 	msg := amqp.Publishing{
-		ContentType:  "application/json",
+		ContentType:  contentTypeApplicationJSON,
 		DeliveryMode: amqp.Persistent,
 		Body:         body,
 	}
@@ -146,18 +155,18 @@ func (c *Client) PublishDelivery(ctx context.Context, vendorID, deliveryTaskID s
 
 func (c *Client) PublishDelayed(ctx context.Context, vendorID, deliveryTaskID string, delayMs int) error {
 	body, err := json.Marshal(map[string]string{
-		"delivery_task_id": deliveryTaskID,
-		"vendor_id":        vendorID,
+		model.FieldDeliveryTaskID: deliveryTaskID,
+		model.FieldVendorID:        vendorID,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal delayed message: %w", err)
 	}
 
 	msg := amqp.Publishing{
-		ContentType:  "application/json",
+		ContentType:  contentTypeApplicationJSON,
 		DeliveryMode: amqp.Persistent,
 		Headers: amqp.Table{
-			"x-original-routing-key": "delivery",
+			headerOriginalRoutingKey: defaultRoutingKey,
 		},
 		Expiration: strconv.Itoa(delayMs),
 		Body:       body,

@@ -5,6 +5,14 @@ import "errors"
 // ErrNotConfigured is returned when a requested configuration is not found.
 var ErrNotConfigured = errors.New("config not configured")
 
+// Template directive keys used in YAML delivery contracts.
+const (
+	DirectiveSource = "$source"
+	DirectiveEach   = "$each"
+	DirectiveType   = "$type"
+	DirectiveFormat = "$format"
+)
+
 // AuthConfig defines how to authenticate API requests to a vendor.
 type AuthConfig struct {
 	Type   string
