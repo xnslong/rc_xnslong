@@ -74,3 +74,5 @@ Use Outside-In TDD in development flow on development activity.
 follow the following workflow. Please refer to the [development-guide](/development-guide.md) for more details.
 
 Run end-to-end tests with [test_e2e.sh](/test_e2e.sh), and then update results to [test-cases](/docs/notification-test-cases.md) each time.
+
+AI coding should obey rules declared in the [ai-coding-rule.md](/ai-coding-rule.md).
