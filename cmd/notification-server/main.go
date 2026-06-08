@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -22,70 +23,116 @@ import (
 	"github.com/xnslong/rc_xnslong/internal/routing"
 )
 
-// Route paths.
 const (
-	routeHealthz    = "/healthz"
-	routeAPIBase    = "/api/v1/notifications"
-	routeAPIByID    = "/api/v1/notifications/{id}"
+	routeHealthz = "/healthz"
+	routeAPIBase = "/api/v1/notifications"
+	routeAPIByID = "/api/v1/notifications/{id}"
 )
 
-// Consumer tags for MQ consumers.
 const (
 	consumerWorker  = "worker"
 	consumerTrigger = "trigger"
 )
 
-// Timeout and concurrency settings.
 const (
 	httpClientTimeout = 10 * time.Second
 	shutdownTimeout   = 10 * time.Second
 	workerConcurrency = 5
 )
 
+type appDeps struct {
+	mq         *rabbitmq.Client
+	worker     *delivery.WorkerPool
+	dispatcher *routing.Dispatcher
+	httpSrv    *http.Server
+}
+
 func main() {
-	// Parse flags
 	configDir := flag.String("config-dir", envOrDefault("CONFIG_DIR", "testdata"), "config directory")
 	httpAddr := flag.String("http-addr", envOrDefault("HTTP_ADDR", ":8080"), "HTTP listen address")
 	pgURL := flag.String("pg-url", envOrDefault("PG_URL", "postgres://notify:notify@localhost:5432/notification?sslmode=disable"), "PostgreSQL URL")
 	mqURL := flag.String("mq-url", envOrDefault("MQ_URL", "amqp://notify:notify@localhost:5672/"), "RabbitMQ URL")
 	flag.Parse()
 
-	// 1. Create DB client
-	db, err := postgres.NewClient(*pgURL)
+	db, mqClient, cfg, err := initInfra(*pgURL, *mqURL, *configDir)
 	if err != nil {
-		log.Fatalf("create db client: %v", err)
+		log.Fatalf("init: %v", err)
 	}
 	defer db.Close()
 
-	// 2. Create MQ client (declares topology)
-	mq, err := rabbitmq.NewClient(*mqURL)
+	deps, err := initServices(db, mqClient, cfg)
 	if err != nil {
-		log.Fatalf("create mq client: %v", err)
+		log.Fatalf("init services: %v", err)
 	}
-	defer mq.Close()
+	deps.httpSrv.Addr = *httpAddr
 
-	// 3. Load config
-	cfg, err := config.NewLoader(*configDir)
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+
+	if err := deps.worker.Start(workerCtx); err != nil {
+		log.Fatalf("start worker pool: %v", err)
+	}
+
+	go runTriggerConsumer(workerCtx, deps.dispatcher, deps.mq)
+
+	go func() {
+		log.Printf("notification server listening on %s", *httpAddr)
+		if err := deps.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("http server error: %v", err)
+		}
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigCh
+	log.Printf("received signal %v, shutting down...", sig)
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer stopCancel()
+
+	deps.worker.Stop(stopCtx)
+	workerCancel()
+	deps.httpSrv.Shutdown(stopCtx)
+}
+
+func initInfra(pgURL, mqURL, configDir string) (*postgres.Client, *rabbitmq.Client, *config.Loader, error) {
+	db, err := postgres.NewClient(pgURL)
 	if err != nil {
-		log.Fatalf("create config loader: %v", err)
+		return nil, nil, nil, fatalErr("create db client", err)
+	}
+
+	mqClient, err := rabbitmq.NewClient(mqURL)
+	if err != nil {
+		db.Close()
+		return nil, nil, nil, fatalErr("create mq client", err)
+	}
+
+	cfg, err := config.NewLoader(configDir)
+	if err != nil {
+		mqClient.Close()
+		db.Close()
+		return nil, nil, nil, fatalErr("create config loader", err)
 	}
 	if err := cfg.Load(context.Background()); err != nil {
-		log.Fatalf("load config: %v", err)
+		mqClient.Close()
+		db.Close()
+		return nil, nil, nil, fatalErr("load config", err)
 	}
 
-	// 4. Create mapping engine
+	return db, mqClient, cfg, nil
+}
+
+func initServices(db *postgres.Client, mqClient *rabbitmq.Client, cfg *config.Loader) (*appDeps, error) {
 	engine := mapping.NewEngine()
 
-	// 5. Create delivery message consumer channel
-	deliveryEvents, err := mq.Consume(rabbitmq.DeliveryQueue, consumerWorker, false)
+	deliveryEvents, err := mqClient.Consume(rabbitmq.DeliveryQueue, consumerWorker, false)
 	if err != nil {
-		log.Fatalf("consume delivery queue: %v", err)
+		return nil, fatalErr("consume delivery queue", err)
 	}
 
-	// 6. Create and start worker pool
 	worker := delivery.NewWorkerPool(workerConcurrency, delivery.WorkerDeps{
 		DB:     db,
-		MQ:     mq,
+		MQ:     mqClient,
 		Config: cfg,
 		Engine: engine,
 		HTTPClient: &http.Client{
@@ -94,44 +141,19 @@ func main() {
 		DeliveryEvents: deliveryEvents,
 	})
 
-	workerCtx, workerCancel := context.WithCancel(context.Background())
-	defer workerCancel()
-
-	if err := worker.Start(workerCtx); err != nil {
-		log.Fatalf("start worker pool: %v", err)
-	}
-
-	// 7. Create dispatcher and start trigger consumer
-	dispatcher := routing.NewDispatcher(db, mq, cfg)
-
-	triggerEvents, err := mq.Consume(rabbitmq.TriggerQueue, consumerTrigger, false)
-	if err != nil {
-		log.Fatalf("consume trigger queue: %v", err)
-	}
-
-	go func() {
-		for {
-			select {
-			case <-workerCtx.Done():
-				return
-			case msg, ok := <-triggerEvents:
-				if !ok {
-					return
-				}
-				notifID := string(msg.Body)
-				log.Printf("dispatcher processing trigger %s", notifID)
-				if err := dispatcher.Dispatch(context.Background(), notifID); err != nil {
-					log.Printf("dispatch error for %s: %v", notifID, err)
-				}
-			}
-		}
-	}()
-
-	// 8. Create ingestion service and handler
-	svc := ingestion.NewService(db, mq, cfg)
+	dispatcher := routing.NewDispatcher(db, mqClient, cfg)
+	svc := ingestion.NewService(db, mqClient, cfg)
 	h := handler.NewHandler(svc)
 
-	// 9. Setup HTTP router
+	return &appDeps{
+		mq:         mqClient,
+		worker:     worker,
+		dispatcher: dispatcher,
+		httpSrv:    &http.Server{Handler: buildRouter(h)},
+	}, nil
+}
+
+func buildRouter(h *handler.Handler) *chi.Mux {
 	r := chi.NewRouter()
 	r.Get(routeHealthz, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -140,38 +162,34 @@ func main() {
 	r.Post(routeAPIBase, h.Ingest)
 	r.Get(routeAPIBase, h.List)
 	r.Get(routeAPIByID, h.GetStatus)
+	return r
+}
 
-	// 10. Start HTTP server
-	httpSrv := &http.Server{
-		Addr:    *httpAddr,
-		Handler: r,
+func runTriggerConsumer(ctx context.Context, d *routing.Dispatcher, mqClient *rabbitmq.Client) {
+	triggerEvents, err := mqClient.Consume(rabbitmq.TriggerQueue, consumerTrigger, false)
+	if err != nil {
+		log.Fatalf("consume trigger queue: %v", err)
 	}
 
-	go func() {
-		log.Printf("notification server listening on %s", *httpAddr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server error: %v", err)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-triggerEvents:
+			if !ok {
+				return
+			}
+			notifID := string(msg.Body)
+			log.Printf("dispatcher processing trigger %s", notifID)
+			if err := d.Dispatch(context.Background(), notifID); err != nil {
+				log.Printf("dispatch error for %s: %v", notifID, err)
+			}
 		}
-	}()
+	}
+}
 
-	// 11. Wait for signal
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	log.Printf("received signal %v, shutting down...", sig)
-
-	// 12. Graceful shutdown
-	// Stop worker pool first (wait for inflight deliveries).
-	// Worker.Stop signals workers via closeCh without cancelling their context,
-	// so in-flight DB operations can complete.
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer stopCancel()
-
-	worker.Stop(stopCtx) // signals workers to stop, waits for in-flight
-	workerCancel()       // stop trigger consumer after workers are done
-
-	// Shutdown HTTP server
-	httpSrv.Shutdown(stopCtx)
+func fatalErr(msg string, err error) error {
+	return fmt.Errorf("%s: %w", msg, err)
 }
 
 func envOrDefault(key, def string) string {

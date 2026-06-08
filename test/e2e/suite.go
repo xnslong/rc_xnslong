@@ -74,97 +74,110 @@ func SetupSuiteWithConfig(configDir, projectRoot string, vendorIDs []string) (*S
 	pgURL := envOrDefault("E2E_PG_URL", defaultPGURL)
 	mqURL := envOrDefault("E2E_MQ_URL", defaultMQURL)
 
-	// Connect to PostgreSQL
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	if err := s.setupPostgres(ctx, pgURL); err != nil {
+		return nil, err
+	}
+	if err := s.setupRabbitMQ(ctx, mqURL); err != nil {
+		return nil, err
+	}
+	if err := s.initNotificationServer(configDir, projectRoot, pgURL, mqURL, vendorIDs); err != nil {
+		return nil, err
+	}
+
+	return s, nil
+}
+
+func (s *Suite) setupPostgres(ctx context.Context, pgURL string) error {
 	pool, err := pgxpool.New(ctx, pgURL)
 	if err != nil {
-		return nil, fmt.Errorf("connect pg: %w", err)
+		return fmt.Errorf("connect pg: %w", err)
 	}
 	s.DBPool = pool
 	s.cleanups = append(s.cleanups, pool.Close)
 
 	if err := pool.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("ping pg: %w", err)
+		return fmt.Errorf("ping pg: %w", err)
 	}
-
-	// Clean DB state from previous test runs
-	// Note: event_schemas table is no longer used by the server — schemas
-	// are loaded from local config files via ConfigLoader.
 	if _, err := pool.Exec(ctx, "TRUNCATE TABLE delivery_tasks, notifications CASCADE"); err != nil {
-		return nil, fmt.Errorf("clean db: %w", err)
+		return fmt.Errorf("clean db: %w", err)
 	}
+	return nil
+}
 
-	// Connect to RabbitMQ
+func (s *Suite) setupRabbitMQ(ctx context.Context, mqURL string) error {
 	conn, err := amqp.Dial(mqURL)
 	if err != nil {
-		return nil, fmt.Errorf("connect mq: %w", err)
+		return fmt.Errorf("connect mq: %w", err)
 	}
 	s.MQConn = conn
 	s.cleanups = append(s.cleanups, func() { conn.Close() })
 
 	ch, err := conn.Channel()
 	if err != nil {
-		return nil, fmt.Errorf("open mq channel: %w", err)
+		return fmt.Errorf("open mq channel: %w", err)
 	}
 	s.MQChan = ch
 	s.cleanups = append(s.cleanups, func() { ch.Close() })
 
-	// Declare MQ topology (clean slate)
 	if err := declareMQTopology(ch); err != nil {
-		return nil, fmt.Errorf("declare mq topology: %w", err)
+		return fmt.Errorf("declare mq topology: %w", err)
 	}
 
-	// Purge queues to remove stale messages
-	if _, err := ch.QueuePurge(TriggerQueue, false); err != nil {
-		return nil, fmt.Errorf("purge trigger queue: %w", err)
+	for _, q := range []string{TriggerQueue, DeliveryQueue, RetryQueue} {
+		if _, err := ch.QueuePurge(q, false); err != nil {
+			return fmt.Errorf("purge %s: %w", q, err)
+		}
 	}
-	if _, err := ch.QueuePurge(DeliveryQueue, false); err != nil {
-		return nil, fmt.Errorf("purge delivery queue: %w", err)
-	}
-	if _, err := ch.QueuePurge(RetryQueue, false); err != nil {
-		return nil, fmt.Errorf("purge retry queue: %w", err)
-	}
+	return nil
+}
 
-	// Load vendor config to discover ports
+func (s *Suite) initNotificationServer(configDir, projectRoot, pgURL, mqURL string, vendorIDs []string) error {
 	loader, err := config.NewLoader(configDir)
 	if err != nil {
-		return nil, fmt.Errorf("create config loader: %w", err)
+		return fmt.Errorf("create config loader: %w", err)
 	}
-	if err := loader.Load(ctx); err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
+	if err := loader.Load(context.Background()); err != nil {
+		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Create one MockVendor per vendor, using ports from config
+	if err := s.startMockVendors(loader, vendorIDs); err != nil {
+		return err
+	}
+	return s.startServerProcess(projectRoot, configDir, pgURL, mqURL)
+}
+
+func (s *Suite) startMockVendors(loader *config.Loader, vendorIDs []string) error {
 	s.MockVendors = make(map[string]*MockVendor)
 	for _, vendorID := range vendorIDs {
 		vendorCfg, err := loader.GetVendorConfig(vendorID)
 		if err != nil {
-			return nil, fmt.Errorf("vendor config not found: %w", err)
+			return fmt.Errorf("vendor config not found: %w", err)
 		}
 
 		u, err := url.Parse(vendorCfg.BaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse vendor base URL %q: %w", vendorCfg.BaseURL, err)
+			return fmt.Errorf("parse vendor base URL %q: %w", vendorCfg.BaseURL, err)
 		}
-		vendorAddr := ":" + u.Port()
 
 		mv := NewMockVendor()
-		if err := mv.Start(vendorAddr); err != nil {
-			return nil, fmt.Errorf("start mock vendor %s: %w", vendorID, err)
+		if err := mv.Start(":" + u.Port()); err != nil {
+			return fmt.Errorf("start mock vendor %s: %w", vendorID, err)
 		}
 		s.MockVendors[vendorID] = mv
 		s.mockVendors = append(s.mockVendors, mv)
 	}
+	return nil
+}
 
-	// Build notification-server binary if not already built
+func (s *Suite) startServerProcess(projectRoot, configDir, pgURL, mqURL string) error {
 	binaryPath, err := BuildBinary(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("build notification-server: %w", err)
+		return fmt.Errorf("build notification-server: %w", err)
 	}
 
-	// Start notification-server as subprocess
 	s.ServerURL = "http://localhost:8080"
 	s.notifCmd = exec.Command(binaryPath,
 		"--config-dir="+configDir,
@@ -179,16 +192,14 @@ func SetupSuiteWithConfig(configDir, projectRoot string, vendorIDs []string) (*S
 	s.notifCmd.Stderr = os.Stderr
 
 	if err := s.notifCmd.Start(); err != nil {
-		return nil, fmt.Errorf("start notification-server: %w", err)
+		return fmt.Errorf("start notification-server: %w", err)
 	}
 
-	// Wait for health endpoint
 	if err := waitForHealth(s.ServerURL+"/healthz", 10*time.Second); err != nil {
 		s.stopNotificationServer()
-		return nil, fmt.Errorf("notification-server health check: %w", err)
+		return fmt.Errorf("notification-server health check: %w", err)
 	}
-
-	return s, nil
+	return nil
 }
 
 // TearDownSuite cleans up all resources: stops notification-server,

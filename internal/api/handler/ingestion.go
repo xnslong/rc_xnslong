@@ -90,35 +90,41 @@ func NewHandler(svc *ingestion.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// Ingest handles POST /api/v1/notifications.
-func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Event         string         `json:"event"`
-		IdempotentKey string         `json:"idempotent_key"`
-		Payload       map[string]any `json:"payload"`
-	}
+type ingestRequest struct {
+	Event         string         `json:"event"`
+	IdempotentKey string         `json:"idempotent_key"`
+	Payload       map[string]any `json:"payload"`
+}
 
+// decodeIngestRequest parses and validates the request body for Ingest.
+func decodeIngestRequest(w http.ResponseWriter, r *http.Request) (*ingestRequest, bool) {
+	var req ingestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errCodeInvalidRequest, msgInvalidRequestBody)
-		return
+		return nil, false
 	}
-
 	if req.Event == "" && req.Payload == nil {
 		writeError(w, http.StatusBadRequest, errCodeInvalidRequest, msgInvalidPayload)
-		return
+		return nil, false
 	}
-
 	if req.Event == "" {
 		writeError(w, http.StatusBadRequest, errCodeInvalidRequest, msgEventRequired)
-		return
+		return nil, false
 	}
-
 	if req.Payload == nil {
 		req.Payload = map[string]any{}
 	}
-
 	if req.IdempotentKey == "" {
 		req.IdempotentKey = randomHex(idempotentKeyBytes)
+	}
+	return &req, true
+}
+
+// Ingest handles POST /api/v1/notifications.
+func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
+	req, ok := decodeIngestRequest(w, r)
+	if !ok {
+		return
 	}
 
 	params := model.UpsertParams{

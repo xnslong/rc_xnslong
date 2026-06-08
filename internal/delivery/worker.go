@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,10 @@ import (
 	"github.com/xnslong/rc_xnslong/internal/model"
 	"github.com/xnslong/rc_xnslong/internal/port"
 )
+
+// errDeliveryHandled is a sentinel error indicating the delivery was handled
+// (e.g. dead-lettered) and should be ACK'd rather than retried.
+var errDeliveryHandled = errors.New("delivery handled")
 
 // Status constants for delivery task life cycle.
 const (
@@ -161,46 +166,60 @@ func (p *WorkerPool) ProcessMessage(ctx context.Context, deliveryTaskID string) 
 	p.processWg.Add(1)
 	defer p.processWg.Done()
 
-	// 1. Fetch delivery task
-	task, err := p.deps.DB.GetDeliveryTask(ctx, deliveryTaskID)
+	task, payload, vendorCfg, spec, err := p.fetchDeliveryData(ctx, deliveryTaskID)
 	if err != nil {
-		return fmt.Errorf("get delivery task: %w", err)
+		if errors.Is(err, errDeliveryHandled) {
+			return nil
+		}
+		return err
 	}
 
-	// 2. Fetch notification payload
-	payload, err := p.deps.DB.GetNotificationPayload(ctx, task.NotificationID)
-	if err != nil {
-		return fmt.Errorf("get notification payload: %w", err)
-	}
-
-	// 3. Get vendor configuration
-	vendorCfg, err := p.deps.Config.GetVendorConfig(task.VendorID)
-	if err != nil {
-		log.Printf("vendor config unavailable for %s: %v", task.VendorID, err)
-		return p.handleDeadLetter(ctx, task, err.Error())
-	}
-
-	// 4. Get delivery spec (mapping config)
-	spec, err := p.deps.Config.GetDeliverySpec(task.VendorID, task.EventType)
-	if err != nil {
-		log.Printf("delivery spec unavailable for %s/%s: %v", task.VendorID, task.EventType, err)
-		return p.handleDeadLetter(ctx, task, err.Error())
-	}
-
-	// Retry policy: contract override takes precedence, otherwise vendor default
 	retryPolicy := vendorCfg.Retry
 	if spec.Retry != nil {
 		retryPolicy = *spec.Retry
 	}
 
-	// 5. Build HTTP request via Engine
 	req, err := p.deps.Engine.BuildRequest(vendorCfg, &spec.Mapping, payload)
 	if err != nil {
+		if errors.Is(err, errDeliveryHandled) {
+			return nil
+		}
 		log.Printf("delivery task %s failed to build request: %v", task.ID, err)
 		return p.retryOrDeadLetter(ctx, task, retryPolicy, err.Error())
 	}
 
-	// 6. Execute HTTP request
+	return p.executeDelivery(ctx, task, retryPolicy, req)
+}
+
+func (p *WorkerPool) fetchDeliveryData(ctx context.Context, deliveryTaskID string) (*model.DeliveryTask, map[string]any, *port.VendorConfig, *port.DeliverySpec, error) {
+	task, err := p.deps.DB.GetDeliveryTask(ctx, deliveryTaskID)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("get delivery task: %w", err)
+	}
+
+	payload, err := p.deps.DB.GetNotificationPayload(ctx, task.NotificationID)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("get notification payload: %w", err)
+	}
+
+	vendorCfg, err := p.deps.Config.GetVendorConfig(task.VendorID)
+	if err != nil {
+		log.Printf("vendor config unavailable for %s: %v", task.VendorID, err)
+		p.handleDeadLetter(ctx, task, err.Error())
+		return nil, nil, nil, nil, errDeliveryHandled
+	}
+
+	spec, err := p.deps.Config.GetDeliverySpec(task.VendorID, task.EventType)
+	if err != nil {
+		log.Printf("delivery spec unavailable for %s/%s: %v", task.VendorID, task.EventType, err)
+		p.handleDeadLetter(ctx, task, err.Error())
+		return nil, nil, nil, nil, errDeliveryHandled
+	}
+
+	return task, payload, vendorCfg, spec, nil
+}
+
+func (p *WorkerPool) executeDelivery(ctx context.Context, task *model.DeliveryTask, retryPolicy port.RetryPolicy, req *http.Request) error {
 	resp, err := p.deps.HTTPClient.Do(req)
 	if err != nil {
 		return p.handleHTTPError(ctx, task, retryPolicy, err.Error())
@@ -208,17 +227,12 @@ func (p *WorkerPool) ProcessMessage(ctx context.Context, deliveryTaskID string) 
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
-	// 7. Judge response outcome
-	// For the skeleton, use basic HTTP status code judgment.
-	// Full ResponseJudgment rule matching will be implemented later.
 	if isHTTPSuccess(resp) {
 		return p.handleDeliverySuccess(ctx, task)
 	}
-
 	if isHTTPRetryable(resp) {
 		return p.retryOrDeadLetter(ctx, task, retryPolicy, resp.Status)
 	}
-
 	return p.handleDeadLetter(ctx, task, resp.Status)
 }
 

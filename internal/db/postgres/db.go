@@ -199,7 +199,6 @@ func (c *Client) GetDeliveryTasksByNotificationID(ctx context.Context, notificat
 }
 
 func (c *Client) ListNotifications(ctx context.Context, callerID, event string, page, pageSize int) ([]*model.Notification, int, error) {
-	// Validate page size
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
 	}
@@ -211,23 +210,8 @@ func (c *Client) ListNotifications(ctx context.Context, callerID, event string, 
 	}
 	offset := (page - 1) * pageSize
 
-	// Build dynamic WHERE clause
-	where := "WHERE 1=1"
-	args := []any{}
-	argIdx := 1
+	where, args, argIdx := buildNotificationFilter(callerID, event)
 
-	if callerID != "" {
-		where += fmt.Sprintf(" AND caller_id = $%d", argIdx)
-		args = append(args, callerID)
-		argIdx++
-	}
-	if event != "" {
-		where += fmt.Sprintf(" AND event_type = $%d", argIdx)
-		args = append(args, event)
-		argIdx++
-	}
-
-	// Count total
 	var total int
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM notifications %s", where)
 	err := c.pool.QueryRow(ctx, countQuery, args...).Scan(&total)
@@ -235,8 +219,6 @@ func (c *Client) ListNotifications(ctx context.Context, callerID, event string, 
 		return nil, 0, fmt.Errorf("count notifications: %w", err)
 	}
 
-	// Fetch page
-	args = append(args, pageSize, offset)
 	query := fmt.Sprintf(`
 		SELECT id, shard_id, caller_id, idempotent_key, event_type, payload, status, created_at, updated_at
 		FROM notifications %s
@@ -244,6 +226,7 @@ func (c *Client) ListNotifications(ctx context.Context, callerID, event string, 
 		LIMIT $%d OFFSET $%d
 	`, where, argIdx, argIdx+1)
 
+	args = append(args, pageSize, offset)
 	rows, err := c.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list notifications: %w", err)
@@ -262,6 +245,22 @@ func (c *Client) ListNotifications(ctx context.Context, callerID, event string, 
 	}
 
 	return notifications, total, nil
+}
+
+func buildNotificationFilter(callerID, event string) (where string, args []any, argIdx int) {
+	where = "WHERE 1=1"
+	argIdx = 1
+	if callerID != "" {
+		where += fmt.Sprintf(" AND caller_id = $%d", argIdx)
+		args = append(args, callerID)
+		argIdx++
+	}
+	if event != "" {
+		where += fmt.Sprintf(" AND event_type = $%d", argIdx)
+		args = append(args, event)
+		argIdx++
+	}
+	return where, args, argIdx
 }
 
 func (c *Client) GetEventSchema(ctx context.Context, eventType string) ([]byte, error) {

@@ -240,102 +240,117 @@ func (l *Loader) loadDir(dir string) error {
 	}
 
 	if eventsExist {
-		walkYAML[routesFile](eventsDir, "{biz}/routes/{event}.yaml",
-			func(file routesFile, path string, vars map[string]string, err error) {
-				if err != nil {
-					l.recordError(configTypeRoute, vars["event"], path, err)
-					return
-				}
-				if file.EventType == "" {
-					l.recordError(configTypeRoute, vars["event"], path, fmt.Errorf("missing event_type"))
-					return
-				}
-				var rules []port.RoutingRule
-				for _, item := range file.Routes {
-					rules = append(rules, port.RoutingRule{EventType: file.EventType, VendorID: item.VendorID})
-				}
-				l.routingRules[file.EventType] = &LoadedValue[[]port.RoutingRule]{Value: rules}
-			})
-		walkYAML[eventSchemaFile](eventsDir, "{biz}/events/{event}.yaml",
-			func(sf eventSchemaFile, path string, vars map[string]string, err error) {
-				if err != nil {
-					l.recordError(configTypeSchema, vars["event"], path, err)
-					return
-				}
-				if sf.EventType == "" || sf.Schema == nil {
-					l.recordError(configTypeSchema, vars["event"], path, fmt.Errorf("missing event_type or schema"))
-					return
-				}
-				l.eventSchemas[sf.EventType] = &LoadedValue[map[string]any]{Value: sf.Schema}
-			})
+		l.loadEventsDir(eventsDir)
 	}
 	if vendorsExist {
-		walkYAML[vendorConfigFile](vendorsDir, "{vendor}/vendor.yaml",
-			func(file vendorConfigFile, path string, vars map[string]string, err error) {
-				if err != nil {
-					vendorID := vars["vendor"]
-					l.recordError(configTypeVendor, vendorID, path, err)
-					return
-				}
-				vendorID := vars["vendor"]
-				vendorRetry, err := convertVendorRetryFile(&file.RetryPolicy)
-				if err != nil {
-					l.recordError(configTypeVendor, vendorID, path, fmt.Errorf("retry_policy: %w", err))
-					return
-				}
-				vendor := &port.VendorConfig{
-					VendorID: vendorID,
-					BaseURL:  file.BaseURL,
-					Retry:    *vendorRetry,
-					Judgment: convertResponseJudgment(file.ResponseJudgment),
-				}
-				if file.Auth != nil {
-					vendor.Auth = &port.AuthConfig{
-						Type:   file.Auth.Type,
-						Config: file.Auth.Config,
-					}
-				}
-				l.vendorConfigs[vendorID] = &LoadedValue[*port.VendorConfig]{Value: vendor}
-			})
-		walkYAML[deliveryContractFile](vendorsDir, "{vendor}/{biz}/{event}.yaml",
-			func(file deliveryContractFile, path string, vars map[string]string, err error) {
-				if err != nil {
-					l.recordError(configTypeContract, vars["vendor"]+"/"+vars["event"], path, err)
-					return
-				}
-				vendorID := vars["vendor"]
-				eventType := file.EventType
-				if eventType == "" {
-					eventType = vars["event"]
-				}
-				scope := vendorID + "/" + filepath.Base(path)
-				spec := &port.DeliverySpec{
-					Mapping: port.MappingConfig{
-						EventType: eventType,
-						Request: port.RequestConfig{
-							Method:  file.Request.Method,
-							Path:    file.Request.Path,
-							Headers: file.Request.Headers,
-						},
-						Body: port.BodyConfig{
-							Type:     file.Request.Body.Type,
-							Template: file.Request.Body.Template,
-						},
-					},
-				}
-				if file.RetryPolicy != nil {
-					retry, err := convertVendorRetryFile(file.RetryPolicy)
-					if err != nil {
-						l.recordError(configTypeContract, scope, path, fmt.Errorf("contract retry_policy: %w", err))
-						return
-					}
-					spec.Retry = retry
-				}
-				key := vendorID + "/" + eventType
-				l.deliveryContracts[key] = &LoadedValue[*port.DeliverySpec]{Value: spec}
-			})
+		l.loadVendorsDir(vendorsDir)
 	}
 	return nil
+}
+
+func (l *Loader) loadEventsDir(eventsDir string) {
+	walkYAML[routesFile](eventsDir, "{biz}/routes/{event}.yaml",
+		func(file routesFile, path string, vars map[string]string, err error) {
+			if err != nil {
+				l.recordError(configTypeRoute, vars["event"], path, err)
+				return
+			}
+			if file.EventType == "" {
+				l.recordError(configTypeRoute, vars["event"], path, fmt.Errorf("missing event_type"))
+				return
+			}
+			var rules []port.RoutingRule
+			for _, item := range file.Routes {
+				rules = append(rules, port.RoutingRule{EventType: file.EventType, VendorID: item.VendorID})
+			}
+			l.routingRules[file.EventType] = &LoadedValue[[]port.RoutingRule]{Value: rules}
+		})
+	walkYAML[eventSchemaFile](eventsDir, "{biz}/events/{event}.yaml",
+		func(sf eventSchemaFile, path string, vars map[string]string, err error) {
+			if err != nil {
+				l.recordError(configTypeSchema, vars["event"], path, err)
+				return
+			}
+			if sf.EventType == "" || sf.Schema == nil {
+				l.recordError(configTypeSchema, vars["event"], path, fmt.Errorf("missing event_type or schema"))
+				return
+			}
+			l.eventSchemas[sf.EventType] = &LoadedValue[map[string]any]{Value: sf.Schema}
+		})
+}
+
+func (l *Loader) loadVendorsDir(vendorsDir string) {
+	walkYAML[vendorConfigFile](vendorsDir, "{vendor}/vendor.yaml",
+		func(file vendorConfigFile, path string, vars map[string]string, err error) {
+			if err != nil {
+				l.recordError(configTypeVendor, vars["vendor"], path, err)
+				return
+			}
+			vendorID := vars["vendor"]
+			l.loadVendorConfigFile(file, vendorID, path)
+		})
+	walkYAML[deliveryContractFile](vendorsDir, "{vendor}/{biz}/{event}.yaml",
+		func(file deliveryContractFile, path string, vars map[string]string, err error) {
+			if err != nil {
+				l.recordError(configTypeContract, vars["vendor"]+"/"+vars["event"], path, err)
+				return
+			}
+			l.loadDeliveryContractFile(file, vars, path)
+		})
+}
+
+func (l *Loader) loadVendorConfigFile(file vendorConfigFile, vendorID, path string) {
+	vendorRetry, err := convertVendorRetryFile(&file.RetryPolicy)
+	if err != nil {
+		l.recordError(configTypeVendor, vendorID, path, fmt.Errorf("retry_policy: %w", err))
+		return
+	}
+	vendor := &port.VendorConfig{
+		VendorID: vendorID,
+		BaseURL:  file.BaseURL,
+		Retry:    *vendorRetry,
+		Judgment: convertResponseJudgment(file.ResponseJudgment),
+	}
+	if file.Auth != nil {
+		vendor.Auth = &port.AuthConfig{
+			Type:   file.Auth.Type,
+			Config: file.Auth.Config,
+		}
+	}
+	l.vendorConfigs[vendorID] = &LoadedValue[*port.VendorConfig]{Value: vendor}
+}
+
+func (l *Loader) loadDeliveryContractFile(file deliveryContractFile, vars map[string]string, path string) {
+	vendorID := vars["vendor"]
+	eventType := file.EventType
+	if eventType == "" {
+		eventType = vars["event"]
+	}
+	scope := vendorID + "/" + filepath.Base(path)
+	spec := &port.DeliverySpec{
+		Mapping: port.MappingConfig{
+			EventType: eventType,
+			Request: port.RequestConfig{
+				Method:  file.Request.Method,
+				Path:    file.Request.Path,
+				Headers: file.Request.Headers,
+			},
+			Body: port.BodyConfig{
+				Type:     file.Request.Body.Type,
+				Template: file.Request.Body.Template,
+			},
+		},
+	}
+	if file.RetryPolicy != nil {
+		retry, err := convertVendorRetryFile(file.RetryPolicy)
+		if err != nil {
+			l.recordError(configTypeContract, scope, path, fmt.Errorf("contract retry_policy: %w", err))
+			return
+		}
+		spec.Retry = retry
+	}
+	key := vendorID + "/" + eventType
+	l.deliveryContracts[key] = &LoadedValue[*port.DeliverySpec]{Value: spec}
 }
 
 // ---- Helpers ----

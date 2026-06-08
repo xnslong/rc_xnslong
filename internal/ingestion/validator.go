@@ -9,10 +9,9 @@ import (
 
 const validationRootPath = "payload"
 
-// schemaValidator validates payloads against JSON Schema definitions.
 type schemaValidator struct {
 	mu    sync.Mutex
-	cache map[uintptr]*schemaNode // key: pointer to schemaMap
+	cache map[uintptr]*schemaNode
 }
 
 func newSchemaValidator() *schemaValidator {
@@ -21,8 +20,6 @@ func newSchemaValidator() *schemaValidator {
 	}
 }
 
-// validate checks the payload against the given JSON Schema bytes.
-// Returns a list of validation errors, or nil if valid.
 func (v *schemaValidator) validate(schemaDef []byte, payload map[string]any) []ValidationError {
 	var schema schemaNode
 	if err := json.Unmarshal(schemaDef, &schema); err != nil {
@@ -31,8 +28,6 @@ func (v *schemaValidator) validate(schemaDef []byte, payload map[string]any) []V
 	return validateNode(schema, payload, validationRootPath)
 }
 
-// validateMap checks the payload against the given JSON Schema map.
-// Uses a cache keyed on the schema map's pointer to avoid repeated parsing.
 func (v *schemaValidator) validateMap(schemaMap map[string]any, payload map[string]any) []ValidationError {
 	key := reflect.ValueOf(schemaMap).Pointer()
 
@@ -58,7 +53,6 @@ func (v *schemaValidator) validateMap(schemaMap map[string]any, payload map[stri
 	return validateNode(*node, payload, validationRootPath)
 }
 
-// schemaNode represents a simplified JSON Schema node for MVP validation.
 type schemaNode struct {
 	Type       string                 `json:"type"`
 	Required   []string               `json:"required"`
@@ -71,121 +65,137 @@ type schemaNode struct {
 	MaxLength  *int                   `json:"maxLength"`
 }
 
-// validateNode recursively validates a value against a schema node.
 func validateNode(schema schemaNode, value any, path string) []ValidationError {
-	var errs []ValidationError
-
 	if value == nil {
-		// nil handled by required check, only flag if the type is expected to be object/array
 		return nil
 	}
 
 	switch schema.Type {
 	case "object":
-		m, ok := value.(map[string]any)
-		if !ok {
-			errs = append(errs, typeMismatch(path, "object", value))
-			return errs
-		}
-		// Check required fields
-		for _, req := range schema.Required {
-			if _, exists := m[req]; !exists || m[req] == nil {
-				errs = append(errs, ValidationError{
-					Field:   path + "." + req,
-					Message: "required field missing",
-				})
-			}
-		}
-		// Validate each property
-		for key, propSchema := range schema.Properties {
-			if val, ok := m[key]; ok && val != nil {
-				childErrs := validateNode(propSchema, val, path+"."+key)
-				errs = append(errs, childErrs...)
-			}
-		}
-
+		return validateObjectNode(schema, value, path)
 	case "array":
-		arr, ok := value.([]any)
-		if !ok {
-			errs = append(errs, typeMismatch(path, "array", value))
-			return errs
-		}
-		if schema.Items != nil {
-			for i, item := range arr {
-				childErrs := validateNode(*schema.Items, item, fmt.Sprintf("%s[%d]", path, i))
-				errs = append(errs, childErrs...)
-			}
-		}
-
+		return validateArrayNode(schema, value, path)
 	case "string":
-		if _, ok := value.(string); !ok {
-			errs = append(errs, typeMismatch(path, "string", value))
-		}
-		// Enum check for strings
-		if len(schema.Enum) > 0 {
-			if strVal, ok := value.(string); ok {
-				found := false
-				for _, e := range schema.Enum {
-					if e == strVal {
-						found = true
-						break
-					}
-				}
-				if !found {
-					errs = append(errs, ValidationError{
-						Field:   path,
-						Message: fmt.Sprintf("value %q not in enum %v", strVal, schema.Enum),
-					})
-				}
-			}
-		}
-
+		return validateStringNode(schema, value, path)
 	case "integer":
-		switch v := value.(type) {
-		case float64:
-			if v != float64(int64(v)) {
-				errs = append(errs, ValidationError{
-					Field:   path,
-					Message: fmt.Sprintf("expected integer, got float"),
-				})
-			} else {
-				// Check numeric constraints
-				if schema.Minimum != nil && v < *schema.Minimum {
-					errs = append(errs, ValidationError{
-						Field:   path,
-						Message: fmt.Sprintf("value %v is less than minimum %v", v, *schema.Minimum),
-					})
-				}
-				if schema.Maximum != nil && v > *schema.Maximum {
-					errs = append(errs, ValidationError{
-						Field:   path,
-						Message: fmt.Sprintf("value %v is greater than maximum %v", v, *schema.Maximum),
-					})
-				}
-			}
-		case int, int64:
-			// Go's json.Unmarshal produces float64, but handle these just in case
-		default:
-			errs = append(errs, typeMismatch(path, "integer", value))
-		}
-
+		return validateIntegerNode(schema, value, path)
 	case "number":
-		switch value.(type) {
-		case float64, int, int64:
-		default:
-			errs = append(errs, typeMismatch(path, "number", value))
-		}
-
+		return validateNumberNode(value, path)
 	case "boolean":
-		if _, ok := value.(bool); !ok {
-			errs = append(errs, typeMismatch(path, "boolean", value))
-		}
+		return validateBooleanNode(value, path)
+	default:
+		return nil
+	}
+}
+
+func validateObjectNode(schema schemaNode, value any, path string) []ValidationError {
+	m, ok := value.(map[string]any)
+	if !ok {
+		return []ValidationError{typeMismatch(path, "object", value)}
 	}
 
+	var errs []ValidationError
+	for _, req := range schema.Required {
+		if _, exists := m[req]; !exists || m[req] == nil {
+			errs = append(errs, ValidationError{
+				Field:   path + "." + req,
+				Message: "required field missing",
+			})
+		}
+	}
+	for key, propSchema := range schema.Properties {
+		if val, ok := m[key]; ok && val != nil {
+			childErrs := validateNode(propSchema, val, path+"."+key)
+			errs = append(errs, childErrs...)
+		}
+	}
 	return errs
 }
 
-// typeMismatch creates a ValidationError for an unexpected Go type.
+func validateArrayNode(schema schemaNode, value any, path string) []ValidationError {
+	arr, ok := value.([]any)
+	if !ok {
+		return []ValidationError{typeMismatch(path, "array", value)}
+	}
+
+	var errs []ValidationError
+	if schema.Items != nil {
+		for i, item := range arr {
+			childErrs := validateNode(*schema.Items, item, fmt.Sprintf("%s[%d]", path, i))
+			errs = append(errs, childErrs...)
+		}
+	}
+	return errs
+}
+
+func validateStringNode(schema schemaNode, value any, path string) []ValidationError {
+	if _, ok := value.(string); !ok {
+		return []ValidationError{typeMismatch(path, "string", value)}
+	}
+	if len(schema.Enum) == 0 {
+		return nil
+	}
+
+	strVal, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	for _, e := range schema.Enum {
+		if e == strVal {
+			return nil
+		}
+	}
+	return []ValidationError{{
+		Field:   path,
+		Message: fmt.Sprintf("value %q not in enum %v", strVal, schema.Enum),
+	}}
+}
+
+func validateIntegerNode(schema schemaNode, value any, path string) []ValidationError {
+	switch v := value.(type) {
+	case float64:
+		if v != float64(int64(v)) {
+			return []ValidationError{{
+				Field:   path,
+				Message: fmt.Sprintf("expected integer, got float"),
+			}}
+		}
+		if schema.Minimum != nil && v < *schema.Minimum {
+			return []ValidationError{{
+				Field:   path,
+				Message: fmt.Sprintf("value %v is less than minimum %v", v, *schema.Minimum),
+			}}
+		}
+		if schema.Maximum != nil && v > *schema.Maximum {
+			return []ValidationError{{
+				Field:   path,
+				Message: fmt.Sprintf("value %v is greater than maximum %v", v, *schema.Maximum),
+			}}
+		}
+		return nil
+	case int, int64:
+		return nil
+	default:
+		return []ValidationError{typeMismatch(path, "integer", value)}
+	}
+}
+
+func validateNumberNode(value any, path string) []ValidationError {
+	switch value.(type) {
+	case float64, int, int64:
+		return nil
+	default:
+		return []ValidationError{typeMismatch(path, "number", value)}
+	}
+}
+
+func validateBooleanNode(value any, path string) []ValidationError {
+	if _, ok := value.(bool); !ok {
+		return []ValidationError{typeMismatch(path, "boolean", value)}
+	}
+	return nil
+}
+
 func typeMismatch(path, want string, got any) ValidationError {
 	return ValidationError{Field: path, Message: fmt.Sprintf("expected %s, got %T", want, got)}
 }
