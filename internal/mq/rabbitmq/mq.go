@@ -18,12 +18,15 @@ const (
 	deliveryQueue    = "notification.delivery.q"
 	dlxExchange      = "notification.dlx"
 	retryQueue       = "notification.retry.q"
+
+	exchangeTypeTopic = "topic"
 )
 
 // Content type and header constants.
 const (
 	contentTypeTextPlain   = "text/plain"
 	contentTypeApplicationJSON = "application/json"
+	headerDeadLetterExchange  = "x-dead-letter-exchange"
 	headerOriginalRoutingKey  = "x-original-routing-key"
 	defaultRoutingKey         = "delivery"
 )
@@ -53,7 +56,7 @@ func NewClient(url string) (*Client, error) {
 		}
 	}()
 
-	if err := ch.ExchangeDeclare(triggerExchange, "topic", true, false, false, false, nil); err != nil {
+	if err := ch.ExchangeDeclare(triggerExchange, exchangeTypeTopic, true, false, false, false, nil); err != nil {
 		return nil, fmt.Errorf("declare trigger exchange: %w", err)
 	}
 	if _, err := ch.QueueDeclare(triggerQueue, true, false, false, false, nil); err != nil {
@@ -62,12 +65,12 @@ func NewClient(url string) (*Client, error) {
 	if err := ch.QueueBind(triggerQueue, "#", triggerExchange, false, nil); err != nil {
 		return nil, fmt.Errorf("bind trigger queue: %w", err)
 	}
-	if err := ch.ExchangeDeclare(deliveryExchange, "topic", true, false, false, false, nil); err != nil {
+	if err := ch.ExchangeDeclare(deliveryExchange, exchangeTypeTopic, true, false, false, false, nil); err != nil {
 		return nil, fmt.Errorf("declare delivery exchange: %w", err)
 	}
 
 	deliveryArgs := amqp.Table{
-		"x-dead-letter-exchange": dlxExchange,
+		headerDeadLetterExchange: dlxExchange,
 	}
 	if _, err := ch.QueueDeclare(deliveryQueue, true, false, false, false, deliveryArgs); err != nil {
 		return nil, fmt.Errorf("declare delivery queue: %w", err)
@@ -75,12 +78,12 @@ func NewClient(url string) (*Client, error) {
 	if err := ch.QueueBind(deliveryQueue, "#", deliveryExchange, false, nil); err != nil {
 		return nil, fmt.Errorf("bind delivery queue: %w", err)
 	}
-	if err := ch.ExchangeDeclare(dlxExchange, "topic", true, false, false, false, nil); err != nil {
+	if err := ch.ExchangeDeclare(dlxExchange, exchangeTypeTopic, true, false, false, false, nil); err != nil {
 		return nil, fmt.Errorf("declare dlx exchange: %w", err)
 	}
 
 	retryArgs := amqp.Table{
-		"x-dead-letter-exchange": deliveryExchange,
+		headerDeadLetterExchange: deliveryExchange,
 	}
 	if _, err := ch.QueueDeclare(retryQueue, true, false, false, false, retryArgs); err != nil {
 		return nil, fmt.Errorf("declare retry queue: %w", err)
