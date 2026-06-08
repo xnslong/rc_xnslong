@@ -143,16 +143,19 @@ func (e *Engine) BuildRequest(vendorCfg *port.VendorConfig, mappingCfg *port.Map
 	if vendorCfg.Auth != nil {
 		switch vendorCfg.Auth.Type {
 		case authTypeBearer:
-			if token, ok := vendorCfg.Auth.Config[authConfigKeyToken].(string); ok {
+			if token, ok := authConfigString(vendorCfg.Auth.Config, authConfigKeyToken); ok {
 				req.Header.Set(authHeaderName, authBearerPrefix+token)
 			}
 		case authTypeBasic:
-			if user, ok := vendorCfg.Auth.Config[authConfigKeyUser].(string); ok {
-				if pass, ok := vendorCfg.Auth.Config[authConfigKeyPass].(string); ok {
-					auth := tostring(user) + ":" + tostring(pass)
-					req.Header.Set(authHeaderName, authBasicPrefix+auth)
-				}
+			user, ok := authConfigString(vendorCfg.Auth.Config, authConfigKeyUser)
+			if !ok {
+				break
 			}
+			pass, ok := authConfigString(vendorCfg.Auth.Config, authConfigKeyPass)
+			if !ok {
+				break
+			}
+			req.Header.Set(authHeaderName, authBasicPrefix+user+":"+pass)
 		}
 	}
 
@@ -511,5 +514,29 @@ func tostring(val any) string {
 		return strconv.FormatBool(v)
 	default:
 		return fmt.Sprintf("%v", v)
+	}
+}
+
+// authConfigString extracts a string value from a vendor auth config map.
+func authConfigString(cfg map[string]any, key string) (string, bool) {
+	v, ok := cfg[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// toFloat64 coerces numeric values (int, int64, float64) to float64.
+func toFloat64(val any) (float64, bool) {
+	switch v := val.(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	default:
+		return 0, false
 	}
 }

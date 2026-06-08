@@ -45,67 +45,51 @@ func NewClient(url string) (*Client, error) {
 		return nil, fmt.Errorf("amqp channel: %w", err)
 	}
 
+	cleanup := true
+	defer func() {
+		if cleanup {
+			ch.Close()
+			conn.Close()
+		}
+	}()
+
 	if err := ch.ExchangeDeclare(triggerExchange, "topic", true, false, false, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
 		return nil, fmt.Errorf("declare trigger exchange: %w", err)
 	}
-
 	if _, err := ch.QueueDeclare(triggerQueue, true, false, false, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
 		return nil, fmt.Errorf("declare trigger queue: %w", err)
 	}
 	if err := ch.QueueBind(triggerQueue, "#", triggerExchange, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
 		return nil, fmt.Errorf("bind trigger queue: %w", err)
 	}
-
-	// Declare delivery exchange
 	if err := ch.ExchangeDeclare(deliveryExchange, "topic", true, false, false, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
 		return nil, fmt.Errorf("declare delivery exchange: %w", err)
 	}
 
-	// Declare delivery queue with DLX → dlxExchange
 	deliveryArgs := amqp.Table{
 		"x-dead-letter-exchange": dlxExchange,
 	}
 	if _, err := ch.QueueDeclare(deliveryQueue, true, false, false, false, deliveryArgs); err != nil {
-		ch.Close()
-		conn.Close()
 		return nil, fmt.Errorf("declare delivery queue: %w", err)
 	}
 	if err := ch.QueueBind(deliveryQueue, "#", deliveryExchange, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
 		return nil, fmt.Errorf("bind delivery queue: %w", err)
 	}
-
-	// Declare DLX exchange
 	if err := ch.ExchangeDeclare(dlxExchange, "topic", true, false, false, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
 		return nil, fmt.Errorf("declare dlx exchange: %w", err)
 	}
 
-	// Declare retry queue with DLX → deliveryExchange, per-message TTL via expiration
 	retryArgs := amqp.Table{
 		"x-dead-letter-exchange": deliveryExchange,
 	}
 	if _, err := ch.QueueDeclare(retryQueue, true, false, false, false, retryArgs); err != nil {
-		ch.Close()
-		conn.Close()
 		return nil, fmt.Errorf("declare retry queue: %w", err)
 	}
 	if err := ch.QueueBind(retryQueue, "#", dlxExchange, false, nil); err != nil {
-		ch.Close()
-		conn.Close()
 		return nil, fmt.Errorf("bind retry queue: %w", err)
 	}
 
+	cleanup = false
 	return &Client{conn: conn, ch: ch}, nil
 }
 

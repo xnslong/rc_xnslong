@@ -69,9 +69,9 @@ const (
 )
 
 const (
-	defaultPage     = 1
-	defaultPageSize = 20
-	maxPageSize     = 100
+	defaultPage        = 1
+	defaultPageSize    = 20
+	maxPageSize        = 100
 	idempotentKeyBytes = 16
 )
 
@@ -103,7 +103,6 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate request body is an object
 	if req.Event == "" && req.Payload == nil {
 		writeError(w, http.StatusBadRequest, errCodeInvalidRequest, msgInvalidPayload)
 		return
@@ -118,7 +117,6 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 		req.Payload = map[string]any{}
 	}
 
-	// Auto-generate idempotent_key if not provided
 	if req.IdempotentKey == "" {
 		req.IdempotentKey = randomHex(idempotentKeyBytes)
 	}
@@ -146,16 +144,13 @@ func (h *Handler) Ingest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := map[string]any{
+	writeJSON(w, http.StatusAccepted, map[string]any{
 		respFieldData: map[string]any{
 			respFieldNotificationID: notification.ID,
 			respFieldStatus:          notification.Status,
 			respFieldCreatedAt:      notification.CreatedAt.Format(time.RFC3339),
 		},
-	}
-	w.Header().Set(headerContentType, contentTypeJSON)
-	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // GetStatus handles GET /api/v1/notifications/{id}.
@@ -180,16 +175,16 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	deliveryResults := make([]map[string]any, 0, len(tasks))
 	for _, t := range tasks {
 		deliveryResults = append(deliveryResults, map[string]any{
-			respFieldVendorID:    t.VendorID,
-			respFieldStatus:       t.Status,
-			respFieldRetryCount:  t.RetryCount,
-			respFieldLastError:   t.LastError,
-			respFieldEvent:        t.EventType,
-			respFieldUpdatedAt:   t.UpdatedAt.Format(time.RFC3339),
+			respFieldVendorID:   t.VendorID,
+			respFieldStatus:      t.Status,
+			respFieldRetryCount: t.RetryCount,
+			respFieldLastError:  t.LastError,
+			respFieldEvent:       t.EventType,
+			respFieldUpdatedAt:  t.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 
-	resp := map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		respFieldData: map[string]any{
 			respFieldNotificationID: notification.ID,
 			respFieldCallerID:       notification.CallerID,
@@ -200,9 +195,7 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 			respFieldCreatedAt:      notification.CreatedAt.Format(time.RFC3339),
 			respFieldUpdatedAt:      notification.UpdatedAt.Format(time.RFC3339),
 		},
-	}
-	w.Header().Set(headerContentType, contentTypeJSON)
-	json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // List handles GET /api/v1/notifications?caller_id=...&event=...&page=...&page_size=...
@@ -219,7 +212,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
 	}
-	if pageSize > 100 {
+	if pageSize > maxPageSize {
 		pageSize = maxPageSize
 	}
 
@@ -247,29 +240,30 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		totalPages = defaultPage
 	}
 
-	resp := map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		respFieldData: map[string]any{
-			respFieldItems:       items,
-			respFieldTotal:       total,
-			respFieldPage:        page,
-			respFieldPageSize:   pageSize,
+			respFieldItems:     items,
+			respFieldTotal:     total,
+			respFieldPage:      page,
+			respFieldPageSize:  pageSize,
 			respFieldTotalPages: totalPages,
 		},
-	}
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set(headerContentType, contentTypeJSON)
-	json.NewEncoder(w).Encode(resp)
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
-	body := map[string]any{
+	writeJSON(w, status, map[string]any{
 		errFieldError: map[string]any{
 			errFieldCode:    code,
 			errFieldMessage: message,
 		},
-	}
-	w.Header().Set(headerContentType, contentTypeJSON)
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(body)
+	})
 }
 
 // randomHex generates a random hex string of n bytes (2n hex chars).
@@ -280,14 +274,11 @@ func randomHex(n int) string {
 }
 
 func writeErrorWithDetails(w http.ResponseWriter, status int, code, message string, details any) {
-	body := map[string]any{
+	writeJSON(w, status, map[string]any{
 		errFieldError: map[string]any{
 			errFieldCode:    code,
 			errFieldMessage: message,
 			errFieldDetails: details,
 		},
-	}
-	w.Header().Set(headerContentType, contentTypeJSON)
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(body)
+	})
 }

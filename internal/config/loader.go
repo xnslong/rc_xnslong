@@ -278,26 +278,15 @@ func (l *Loader) loadDir(dir string) error {
 					return
 				}
 				vendorID := vars["vendor"]
-				baseDelayMs, err := parseDurationToMs(file.RetryPolicy.BaseDelay)
+				vendorRetry, err := convertVendorRetryFile(&file.RetryPolicy)
 				if err != nil {
-					l.recordError(configTypeVendor, vendorID, path, fmt.Errorf("parsing base_delay: %w", err))
-					return
-				}
-				maxDelayMs, err := parseDurationToMs(file.RetryPolicy.MaxDelay)
-				if err != nil {
-					l.recordError(configTypeVendor, vendorID, path, fmt.Errorf("parsing max_delay: %w", err))
+					l.recordError(configTypeVendor, vendorID, path, fmt.Errorf("retry_policy: %w", err))
 					return
 				}
 				vendor := &port.VendorConfig{
 					VendorID: vendorID,
 					BaseURL:  file.BaseURL,
-					Retry: port.RetryPolicy{
-						MaxAttempts: file.RetryPolicy.MaxAttempts,
-						BaseDelayMs: baseDelayMs,
-						MaxDelayMs:  maxDelayMs,
-						Multiplier:  file.RetryPolicy.Multiplier,
-						Jitter:      file.RetryPolicy.Jitter,
-					},
+					Retry:    *vendorRetry,
 					Judgment: convertResponseJudgment(file.ResponseJudgment),
 				}
 				if file.Auth != nil {
@@ -610,16 +599,27 @@ func (l *Loader) validateCrossConfig() {
 	}
 }
 
+// ---- Generic helpers ----
+
+// lookup returns the value for key from a LoadedValue map, or ErrNotConfigured.
+func lookup[T any](m map[string]*LoadedValue[T], key string) (T, error) {
+	lv, ok := m[key]
+	if !ok {
+		var zero T
+		return zero, port.ErrNotConfigured
+	}
+	if lv.Error != nil {
+		var zero T
+		return zero, lv.Error
+	}
+	return lv.Value, nil
+}
+
 // ---- ConfigProvider implementation ----
 
 // GetVendorConfig returns the vendor configuration for the given vendor ID.
 func (l *Loader) GetVendorConfig(vendorID string) (*port.VendorConfig, error) {
-
-	lv, ok := l.vendorConfigs[vendorID]
-	if !ok {
-		return nil, port.ErrNotConfigured
-	}
-	return lv.Value, lv.Error
+	return lookup(l.vendorConfigs, vendorID)
 }
 
 // GetAllVendorIDs returns all known vendor IDs.
@@ -669,23 +669,10 @@ func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec
 
 // GetRoutingRules returns all routing rules matching the given event type.
 func (l *Loader) GetRoutingRules(eventType string) ([]port.RoutingRule, error) {
-
-	lv, ok := l.routingRules[eventType]
-	if !ok {
-		return nil, port.ErrNotConfigured
-	}
-	if lv.Error != nil {
-		return nil, lv.Error
-	}
-	return lv.Value, lv.Error
+	return lookup(l.routingRules, eventType)
 }
 
 // GetEventSchema returns the event schema for the given event type.
 func (l *Loader) GetEventSchema(eventType string) (map[string]any, error) {
-
-	lv, ok := l.eventSchemas[eventType]
-	if !ok {
-		return nil, port.ErrNotConfigured
-	}
-	return lv.Value, lv.Error
+	return lookup(l.eventSchemas, eventType)
 }

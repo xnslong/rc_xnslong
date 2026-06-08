@@ -84,10 +84,7 @@ func validateNode(schema schemaNode, value any, path string) []ValidationError {
 	case "object":
 		m, ok := value.(map[string]any)
 		if !ok {
-			errs = append(errs, ValidationError{
-				Field:   path,
-				Message: fmt.Sprintf("expected object, got %T", value),
-			})
+			errs = append(errs, typeMismatch(path, "object", value))
 			return errs
 		}
 		// Check required fields
@@ -110,10 +107,7 @@ func validateNode(schema schemaNode, value any, path string) []ValidationError {
 	case "array":
 		arr, ok := value.([]any)
 		if !ok {
-			errs = append(errs, ValidationError{
-				Field:   path,
-				Message: fmt.Sprintf("expected array, got %T", value),
-			})
+			errs = append(errs, typeMismatch(path, "array", value))
 			return errs
 		}
 		if schema.Items != nil {
@@ -125,10 +119,7 @@ func validateNode(schema schemaNode, value any, path string) []ValidationError {
 
 	case "string":
 		if _, ok := value.(string); !ok {
-			errs = append(errs, ValidationError{
-				Field:   path,
-				Message: fmt.Sprintf("expected string, got %T", value),
-			})
+			errs = append(errs, typeMismatch(path, "string", value))
 		}
 		// Enum check for strings
 		if len(schema.Enum) > 0 {
@@ -175,30 +166,26 @@ func validateNode(schema schemaNode, value any, path string) []ValidationError {
 		case int, int64:
 			// Go's json.Unmarshal produces float64, but handle these just in case
 		default:
-			errs = append(errs, ValidationError{
-				Field:   path,
-				Message: fmt.Sprintf("expected integer, got %T", value),
-			})
+			errs = append(errs, typeMismatch(path, "integer", value))
 		}
 
 	case "number":
 		switch value.(type) {
 		case float64, int, int64:
 		default:
-			errs = append(errs, ValidationError{
-				Field:   path,
-				Message: fmt.Sprintf("expected number, got %T", value),
-			})
+			errs = append(errs, typeMismatch(path, "number", value))
 		}
 
 	case "boolean":
 		if _, ok := value.(bool); !ok {
-			errs = append(errs, ValidationError{
-				Field:   path,
-				Message: fmt.Sprintf("expected boolean, got %T", value),
-			})
+			errs = append(errs, typeMismatch(path, "boolean", value))
 		}
 	}
 
 	return errs
+}
+
+// typeMismatch creates a ValidationError for an unexpected Go type.
+func typeMismatch(path, want string, got any) ValidationError {
+	return ValidationError{Field: path, Message: fmt.Sprintf("expected %s, got %T", want, got)}
 }
