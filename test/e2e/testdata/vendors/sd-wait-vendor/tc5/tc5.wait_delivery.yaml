@@ -1,4 +1,4 @@
-event_type: "order.paid"
+event_type: "tc5.wait_delivery"
 request:
   method: POST
   path: "/api/notify"

@@ -20,6 +20,11 @@ func getTestdataDir(subdir string) string {
 	return filepath.Join(filepath.Dir(filename), "testdata", subdir)
 }
 
+// TODO: These config-loader tests use internal/config.NewLoader() directly,
+// bypassing the notification-server HTTP API. They are not true e2e tests
+// and should be moved to internal/config/loader_test.go.
+// FIXME: Move to internal/config/loader_test.go once e2e scope is clarified.
+//
 // @test-case TC4.1-invalid_config
 // Test 4.1: 无效配置边界容错
 func TestConfig_PartialAvailability(t *testing.T) {
@@ -53,6 +58,8 @@ func TestConfig_PartialAvailability(t *testing.T) {
 	})
 }
 
+// FIXME: Same issue as TC4.1 — move to internal/config/loader_test.go.
+//
 // @test-case TC4.2-nonexistent-path
 // Test 4.2: 完全缺失配置拒绝启动
 func TestConfig_NonExistentPath(t *testing.T) {

@@ -1,4 +1,4 @@
-event_type: "order.paid"
+event_type: "tc5.retry_on_sigterm"
 request:
   method: POST
   path: "/api/notify"

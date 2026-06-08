@@ -1,8 +1,6 @@
 package e2e_test
 
 import (
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -24,15 +22,8 @@ import (
 // @test-case TC4.3-template_field_validation
 func TestConfig_TemplateFieldValidation(t *testing.T) {
 	t.Run("TC4.3-template_field_validation", func(t *testing.T) {
-		projectRoot := getProjectRootConfig()
-
-		// Use the common testdata config which includes the tc43 event type
-		// with a delivery contract that references an undeclared field.
-		configDir := projectRoot + "/test/e2e/testdata/common"
-
-		suite, err := e2e.SetupSuiteWithConfig(configDir, projectRoot, []string{"tpl_valid_vendor"})
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		// Post a notification using the tc43 event type (has invalid contract)
 		body := `{
@@ -41,20 +32,14 @@ func TestConfig_TemplateFieldValidation(t *testing.T) {
 			"payload": {"user_id": "u123", "amount": 5000}
 		}`
 
-		notifID := postAndGetID(t, suite.ServerURL+"/api/v1/notifications", body)
+		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 		require.NotEmpty(t, notifID)
 
 		// The contract is marked unavailable by validateCrossConfig, so delivery
 		// cannot proceed. The notification ends up FAILED.
-		status, err := waitForStatusMapping(suite.ServerURL, notifID, []string{"FAILED"}, 15*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{"FAILED"}, 15*time.Second)
 		require.NoError(t, err)
 		require.Equal(t, "FAILED", status,
 			"notification should be FAILED because the contract references an undeclared field")
 	})
-}
-
-// getProjectRootConfig returns the project root from the test file location.
-func getProjectRootConfig() string {
-	_, filename, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(filename), "..", "..")
 }

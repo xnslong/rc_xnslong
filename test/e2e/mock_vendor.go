@@ -82,6 +82,17 @@ func (m *MockVendor) Close() {
 	}
 }
 
+// Reset clears all requests, response behaviors, and signal channels.
+// After Reset, the vendor returns 200 OK by default.
+func (m *MockVendor) Reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests = nil
+	m.responses = nil
+	m.callCount = 0
+	m.signals = nil
+}
+
 // RegisterBehavior sets the response sequence for this vendor.
 // Each call consumes one response. If more calls are made than registered
 // responses, the last response is reused.

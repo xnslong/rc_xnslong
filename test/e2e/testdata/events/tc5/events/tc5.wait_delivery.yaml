@@ -1,4 +1,4 @@
-event_type: "order.paid"
+event_type: "tc5.wait_delivery"
 schema:
   type: object
   required: [order_id, user_id, amount, currency]

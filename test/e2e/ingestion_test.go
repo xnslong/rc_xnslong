@@ -20,9 +20,9 @@ type apiResponse struct {
 // apiErrorResponse is the standard API error response wrapper.
 type apiErrorResponse struct {
 	Error struct {
-		Code    string                   `json:"code"`
-		Message string                   `json:"message"`
-		Details []map[string]any         `json:"details,omitempty"`
+		Code    string           `json:"code"`
+		Message string           `json:"message"`
+		Details []map[string]any `json:"details,omitempty"`
 	} `json:"error"`
 }
 
@@ -30,9 +30,8 @@ type apiErrorResponse struct {
 // Test 1.1.1: 有效提交通知 → 202 + data.notification_id
 func TestIngestion_HappyPath(t *testing.T) {
 	t.Run("TC1.1-valid_payload", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{
 			"event": "order.paid",
@@ -40,7 +39,7 @@ func TestIngestion_HappyPath(t *testing.T) {
 			"payload": {"order_id": "123", "user_id": "u1", "amount": 29900, "currency": "CNY"}
 		}`
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -61,9 +60,8 @@ func TestIngestion_HappyPath(t *testing.T) {
 // Test 1.1.2: 幂等键重复 → 同一 notification_id
 func TestIngestion_DuplicateIdempotentKey(t *testing.T) {
 	t.Run("TC1.3-duplicate_idempotent_key", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{
 			"event": "order.paid",
@@ -72,7 +70,7 @@ func TestIngestion_DuplicateIdempotentKey(t *testing.T) {
 		}`
 
 		// First POST
-		resp1, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp1, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp1.Body.Close()
 		assert.Equal(t, http.StatusAccepted, resp1.StatusCode)
@@ -83,7 +81,7 @@ func TestIngestion_DuplicateIdempotentKey(t *testing.T) {
 		require.NotEmpty(t, id1)
 
 		// Second POST with same payload
-		resp2, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp2, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp2.Body.Close()
 		assert.Equal(t, http.StatusAccepted, resp2.StatusCode)
@@ -101,11 +99,10 @@ func TestIngestion_DuplicateIdempotentKey(t *testing.T) {
 // Test 1.1.3: 无效 JSON → 400 INVALID_REQUEST
 func TestIngestion_InvalidJSON(t *testing.T) {
 	t.Run("TC1.2-invalid_json_body", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(`{invalid json`))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(`{invalid json`))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -121,16 +118,15 @@ func TestIngestion_InvalidJSON(t *testing.T) {
 // Test 1.1.4: event 为空 → 400 INVALID_REQUEST
 func TestIngestion_MissingEvent(t *testing.T) {
 	t.Run("TC1.2-empty_event", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{
 			"event": "",
 			"payload": {"order_id": "123"}
 		}`
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -146,9 +142,8 @@ func TestIngestion_MissingEvent(t *testing.T) {
 // Test 1.1.5: 事件类型未注册 → 422 EVENT_NOT_FOUND
 func TestIngestion_EventTypeNotFound(t *testing.T) {
 	t.Run("TC1.4-unregistered_event", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{
 			"event": "unknown.event.type",
@@ -156,7 +151,7 @@ func TestIngestion_EventTypeNotFound(t *testing.T) {
 			"payload": {"order_id": "123", "user_id": "u1", "amount": 100, "currency": "CNY"}
 		}`
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -172,9 +167,8 @@ func TestIngestion_EventTypeNotFound(t *testing.T) {
 // Test 1.1.6: payload 不符合 Schema → 422 SCHEMA_VALIDATION_FAILED + details
 func TestIngestion_SchemaValidationFailed(t *testing.T) {
 	t.Run("TC1.4-missing_required_field", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		// Test case: missing required field order_id
 		body := `{
@@ -183,7 +177,7 @@ func TestIngestion_SchemaValidationFailed(t *testing.T) {
 			"payload": {"user_id": "u1", "amount": 100, "currency": "CNY"}
 		}`
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -200,9 +194,8 @@ func TestIngestion_SchemaValidationFailed(t *testing.T) {
 // idempotent_key 不传自动生成
 func TestIngestion_AutoIdempotentKey(t *testing.T) {
 	t.Run("TC1.1-auto_idempotent_key", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{
 			"event": "order.paid",
@@ -210,7 +203,7 @@ func TestIngestion_AutoIdempotentKey(t *testing.T) {
 		}`
 		// No idempotent_key in request
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusAccepted, resp.StatusCode)
@@ -226,13 +219,12 @@ func TestIngestion_AutoIdempotentKey(t *testing.T) {
 // POST JSON array → 400 INVALID_REQUEST
 func TestIngestion_JsonArrayBody(t *testing.T) {
 	t.Run("TC1.2-json_array_body", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `[{"event": "order.paid", "payload": {"order_id": "123"}}]`
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -247,11 +239,10 @@ func TestIngestion_JsonArrayBody(t *testing.T) {
 // POST pure string → 400 INVALID_REQUEST
 func TestIngestion_JsonScalarBody(t *testing.T) {
 	t.Run("TC1.2-json_scalar_body", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(`"just a string"`))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(`"just a string"`))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -266,13 +257,12 @@ func TestIngestion_JsonScalarBody(t *testing.T) {
 // POST event with wrong type (number) → 400 INVALID_REQUEST
 func TestIngestion_InvalidEventType(t *testing.T) {
 	t.Run("TC1.2-invalid_event_type", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{"event": 123, "idempotent_key": "tc-invalid-event-1", "payload": {"order_id": "1"}}`
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -287,9 +277,8 @@ func TestIngestion_InvalidEventType(t *testing.T) {
 // amount 为 string 而非 integer → 422 SCHEMA_VALIDATION_FAILED + details
 func TestSchema_WrongFieldType(t *testing.T) {
 	t.Run("TC1.4-wrong_field_type", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{
 			"event": "order.paid",
@@ -297,7 +286,7 @@ func TestSchema_WrongFieldType(t *testing.T) {
 			"payload": {"order_id": "123", "user_id": "u1", "amount": "not-a-number", "currency": "CNY"}
 		}`
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
@@ -313,9 +302,8 @@ func TestSchema_WrongFieldType(t *testing.T) {
 // currency 为未注册的值 "GBP" → 422 SCHEMA_VALIDATION_FAILED + details
 func TestSchema_EnumOutOfRange(t *testing.T) {
 	t.Run("TC1.4-enum_out_of_range", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{
 			"event": "order.paid",
@@ -323,7 +311,7 @@ func TestSchema_EnumOutOfRange(t *testing.T) {
 			"payload": {"order_id": "123", "user_id": "u1", "amount": 100, "currency": "GBP"}
 		}`
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
@@ -339,9 +327,8 @@ func TestSchema_EnumOutOfRange(t *testing.T) {
 // amount 为 -100 违反 minimum:0 → 422 SCHEMA_VALIDATION_FAILED + details
 func TestSchema_NumericConstraint(t *testing.T) {
 	t.Run("TC1.4-numeric_constraint", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{
 			"event": "order.paid",
@@ -349,7 +336,7 @@ func TestSchema_NumericConstraint(t *testing.T) {
 			"payload": {"order_id": "123", "user_id": "u1", "amount": -100, "currency": "CNY"}
 		}`
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
@@ -365,9 +352,8 @@ func TestSchema_NumericConstraint(t *testing.T) {
 // payload 同时缺 2 个必填字段 + 类型错误 → 422 + 2+ details
 func TestSchema_MultipleErrors(t *testing.T) {
 	t.Run("TC1.4-multiple_errors", func(t *testing.T) {
-		suite, err := e2e.SetupSuite()
-		require.NoError(t, err)
-		defer suite.TearDownSuite()
+		e2e.Setup()
+		defer e2e.TearDown()
 
 		body := `{
 			"event": "order.paid",
@@ -376,7 +362,7 @@ func TestSchema_MultipleErrors(t *testing.T) {
 		}`
 		// Missing order_id AND user_id, plus amount type mismatch
 
-		resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
@@ -393,9 +379,8 @@ func TestSchema_MultipleErrors(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIngestion_ListNotifications(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	e2e.Setup()
+	defer e2e.TearDown()
 
 	// Create a notification first
 	body := `{
@@ -404,11 +389,11 @@ func TestIngestion_ListNotifications(t *testing.T) {
 		"payload": {"order_id": "list1", "user_id": "u1", "amount": 100, "currency": "CNY"}
 	}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+	resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	resp.Body.Close()
 
-	listURL := suite.ServerURL + "/api/v1/notifications"
+	listURL := e2e.ServerURL() + "/api/v1/notifications"
 	resp, err = http.Get(listURL)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -418,10 +403,10 @@ func TestIngestion_ListNotifications(t *testing.T) {
 	var result struct {
 		Data struct {
 			Items      []map[string]any `json:"items"`
-			Total      int             `json:"total"`
-			Page       int             `json:"page"`
-			PageSize   int             `json:"page_size"`
-			TotalPages int             `json:"total_pages"`
+			Total      int              `json:"total"`
+			Page       int              `json:"page"`
+			PageSize   int              `json:"page_size"`
+			TotalPages int              `json:"total_pages"`
 		} `json:"data"`
 	}
 	err = json.NewDecoder(resp.Body).Decode(&result)
@@ -436,9 +421,8 @@ func TestIngestion_ListNotifications(t *testing.T) {
 }
 
 func TestIngestion_ListNotificationsWithEventFilter(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	e2e.Setup()
+	defer e2e.TearDown()
 
 	body := `{
 		"event": "order.paid",
@@ -446,11 +430,11 @@ func TestIngestion_ListNotificationsWithEventFilter(t *testing.T) {
 		"payload": {"order_id": "list-filter", "user_id": "u1", "amount": 100, "currency": "CNY"}
 	}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+	resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	resp.Body.Close()
 
-	listURL := suite.ServerURL + "/api/v1/notifications?event=order.paid"
+	listURL := e2e.ServerURL() + "/api/v1/notifications?event=order.paid"
 	resp, err = http.Get(listURL)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -460,10 +444,10 @@ func TestIngestion_ListNotificationsWithEventFilter(t *testing.T) {
 	var result struct {
 		Data struct {
 			Items      []map[string]any `json:"items"`
-			Total      int             `json:"total"`
-			Page       int             `json:"page"`
-			PageSize   int             `json:"page_size"`
-			TotalPages int             `json:"total_pages"`
+			Total      int              `json:"total"`
+			Page       int              `json:"page"`
+			PageSize   int              `json:"page_size"`
+			TotalPages int              `json:"total_pages"`
 		} `json:"data"`
 	}
 	err = json.NewDecoder(resp.Body).Decode(&result)
@@ -476,9 +460,8 @@ func TestIngestion_ListNotificationsWithEventFilter(t *testing.T) {
 }
 
 func TestIngestion_ListNotificationsWithPagination(t *testing.T) {
-	suite, err := e2e.SetupSuite()
-	require.NoError(t, err)
-	defer suite.TearDownSuite()
+	e2e.Setup()
+	defer e2e.TearDown()
 
 	body := `{
 		"event": "order.paid",
@@ -486,11 +469,11 @@ func TestIngestion_ListNotificationsWithPagination(t *testing.T) {
 		"payload": {"order_id": "list-page", "user_id": "u1", "amount": 100, "currency": "CNY"}
 	}`
 
-	resp, err := http.Post(suite.ServerURL+"/api/v1/notifications", "application/json", strings.NewReader(body))
+	resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	resp.Body.Close()
 
-	listURL := suite.ServerURL + "/api/v1/notifications?page=1&page_size=1"
+	listURL := e2e.ServerURL() + "/api/v1/notifications?page=1&page_size=1"
 	resp, err = http.Get(listURL)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -500,10 +483,10 @@ func TestIngestion_ListNotificationsWithPagination(t *testing.T) {
 	var result struct {
 		Data struct {
 			Items      []map[string]any `json:"items"`
-			Total      int             `json:"total"`
-			Page       int             `json:"page"`
-			PageSize   int             `json:"page_size"`
-			TotalPages int             `json:"total_pages"`
+			Total      int              `json:"total"`
+			Page       int              `json:"page"`
+			PageSize   int              `json:"page_size"`
+			TotalPages int              `json:"total_pages"`
 		} `json:"data"`
 	}
 	err = json.NewDecoder(resp.Body).Decode(&result)
