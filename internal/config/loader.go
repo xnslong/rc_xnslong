@@ -653,24 +653,16 @@ func (l *Loader) GetAllVendorIDs() []string {
 // judgment. The contract may optionally override the retry policy.
 func (l *Loader) GetDeliverySpec(vendorID, eventType string) (*port.DeliverySpec, error) {
 
-	vendorLV, ok := l.vendorConfigs[vendorID]
-	if !ok {
-		return nil, port.ErrNotConfigured
+	vendor, err := lookup(l.vendorConfigs, vendorID)
+	if err != nil {
+		return nil, err
 	}
-	if vendorLV.Error != nil {
-		return nil, vendorLV.Error
-	}
-	vendor := vendorLV.Value
 
 	contractKey := vendorID + "/" + eventType
-	contractLV, hasContract := l.deliveryContracts[contractKey]
-	if !hasContract {
-		return nil, port.ErrNotConfigured
+	specLV, err := lookup(l.deliveryContracts, contractKey)
+	if err != nil {
+		return nil, err
 	}
-	if contractLV.Error != nil {
-		return nil, contractLV.Error
-	}
-	specLV := contractLV.Value
 
 	// Shallow-copy the stored spec, then fill in vendor-level defaults.
 	spec := *specLV
