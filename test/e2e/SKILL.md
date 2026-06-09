@@ -66,13 +66,37 @@ test/e2e/testdata/
 
 ### 特殊场景例外
 
-以下类型测试可以使用独立的配置目录（不在统一 testdata 中），或通过 `e2e.ExcludeVendors` 排除不需要的 vendor mock：
+以下类型测试可以使用独立的配置目录（不在统一 testdata 中），或通过 `e2e.ExcludeVendors` / `e2e.IncludeVendors` 精确控制 vendor mock：
 
-1. **Config loader 测试** — 使用独立配置目录（放在 `test/e2e/testdata/{场景名}/`），不启动 server 和 vendors。这些测试应最终迁移到 `internal/config/` 下。
+1. **配置边界测试** — 脏 vendor 直接存放在共享的 `test/e2e/testdata/vendors/` 下，与正常 vendor 共存。mock 仍然启动（见 §Mock Vendor 必须启动原则）。测试通过共享套件的 HTTP API 观察不同 vendor 的投递结果，验证脏配置的隔离性。
 2. **网络不可达测试** — 通过 `e2e.SetupSuite(e2e.ExcludeVendors("unreachable_vendor"))` 排除该 vendor 的 mock，让端口上没有任何服务监听。
 3. **Vendor 崩溃恢复测试** — 通过 `e2e.StopVendor(id)` / `e2e.StartVendor(id)` 在用例中模拟 vendor 挂掉和恢复。`e2e.TearDown()` 自动恢复到初始状态。
 
 ## 测试编写模式
+
+### 幂等键（idempotent_key）约定
+
+每个用例的幂等键必须是**新鲜且唯一**的，避免直接 `go test` 重跑时因 PG/MQ 残留数据撞到幂等去重：
+
+- 格式：`e2e.NewTestID("TCX.Y-{slug}")`，其中 `TCX.Y-{slug}` 是 `@test-case` 标注的用例 ID
+- `e2e.NewTestID()` 自动追加纳秒级时间戳保证唯一性
+- 幂等去重测试（TC1.3）是例外：生成一次 key，两次 POST 用同一个
+- 不传 idempotent_key 的测试（TC1.1-auto_idempotent_key）不受此约束
+
+```go
+// 标准用法
+body := fmt.Sprintf(`{
+    "event": "order.paid",
+    "idempotent_key": "%s",
+    "payload": {...}
+}`, e2e.NewTestID("TC3.1-matched_vendor_called"))
+
+// 幂等去重测试 — 生成一次 key，整个用例复用
+dedupKey := e2e.NewTestID("TC1.3-duplicate_idempotent_key")
+body := fmt.Sprintf(`{..., "idempotent_key": "%s", ...}`, dedupKey)
+// 第一次 POST 用 body（含 dedupKey）
+// 第二次 POST 用同一个 body（同一个 dedupKey）
+```
 
 ### 标准模式
 
@@ -102,9 +126,9 @@ func TestMyScenario(t *testing.T) {
     assert.Equal(t, "POST", vendorReq.Method)
 
     // 4. 等待通知状态并验证
-    status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+    status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
     require.NoError(t, err)
-    assert.Equal(t, "SUCCEEDED", status)
+    assert.Equal(t, e2e.StatusSucceeded, status)
 }
 ```
 
@@ -114,6 +138,25 @@ func TestMyScenario(t *testing.T) {
 - **不直接操作 MQ** — 不连接 RabbitMQ 来检查队列或投递消息（`mq_debug_test.go` 这种基础设施验证除外）。
 - **不声明 MQ 拓扑** — MQ 的 exchange/queue/binding 由被测服务在启动时自己声明。
 - **不清理 DB/MQ 数据** — 每次运行使用全新 Docker 容器，测试无需自行清理。
+
+### Mock Vendor 必须启动原则
+
+E2E 测试是黑盒测试，**不基于对系统内部实现方式的假设做任何决策**。测试只模拟端点行为，通过端点行为来验证系统行为是否正确。
+
+因此：
+
+- **凡是 route 文件中引用的 vendor，其 mock 必须启动。** 不论该 vendor 的配置（vendor.yaml、delivery contract）是否合法。
+- **即使预期系统不会向某个 vendor 发请求，其 mock 也必须启动并监听对应端口。** 这是唯一能区分"系统正确不发请求"和"系统有 bug 但 mock 没启动所以检测不到"的方式。
+- **唯一的例外是网络不可达测试**（如 TC3.5），通过 `ExcludeVendors` 排除 mock 启动，在该端口上确实没有任何服务监听。
+
+```go
+// 正确：即使预期 bad_vendor 收不到请求，mock 也必须启动
+// 然后通过 .Requests() 断言为 0 来验证系统确实没发请求
+assert.Empty(t, e2e.Vendor("bad_vendor").Requests(),
+    "bad_vendor should receive 0 requests due to config error")
+
+// 错误：不启动 mock → 测试无法区分"正确没发"和"系统错误但没被发现"
+```
 
 ### 包级 API 速查
 
@@ -138,6 +181,7 @@ e2e.Vendor(id) *MockVendor        // 获取 vendor 的 mock 实例（未启动�
 
 // 选项
 e2e.ExcludeVendors(ids ...string) Option  // 排除指定 vendor 不启动
+e2e.IncludeVendors(specs ...VendorSpec) Option  // 为配置损坏的 vendor 声明端口并启动 mock
 ```
 
 ### MockVendor 用法
@@ -207,15 +251,51 @@ func TestShutdown_RetryOnSigterm(t *testing.T) {
 
 ### Config 加载测试模式
 
+Config 边界测试验证系统在配置文件中存在脏数据时的容错行为。关键在于**测试必须使用与正常测试相同的共享配置目录**，否则无法验证"脏配置与正常配置共存时的隔离性"。脏 vendor 直接存放在 `test/e2e/testdata/vendors/` 下，与正常 vendor 共存。所有 route 中引用的 vendor（包括脏 vendor）的 mock 都会启动（见 §Mock Vendor 必须启动原则），保证测试能通过请求计数来验证系统行为。
+
+在 `main_test.go` 中通过 `IncludeVendors` 为配置损坏的 vendor 声明端口：
+
 ```go
-func TestConfig_Scenario(t *testing.T) {
-    // 使用独立配置目录 + config.NewLoader 直接测试加载逻辑
-    // 不启动 server，不启动 vendors（不是端到端测试）
-    // 这些测试应放在 internal/config/ 下，而非 test/e2e/
-    loader, err := config.NewLoader(testdataDir)
-    require.NoError(t, err)
-    err = loader.Load(context.Background())
-    // ... 验证加载结果
+func TestMain(m *testing.M) {
+    os.Exit(runTests(m))
+}
+
+func runTests(m *testing.M) int {
+    SetupSuite(
+        ExcludeVendors("unreachable_vendor_19999"),
+        IncludeVendors(
+            VendorSpec{ID: "bad_vendor", Port: 18001},
+            VendorSpec{ID: "invalid_retry_vendor", Port: 18002},
+            VendorSpec{ID: "missing_yaml_vendor", Port: 18003},
+        ),
+    )
+    defer TearDownSuite()
+    // ...
+}
+```
+
+`IncludeVendors` 补充那些 vendor.yaml 损坏（语法错误、文件缺失、retry 配置无效）的 vendor，让测试框架能直接启动 mock，不依赖系统对 vendor.yaml 的解析能力。端口号是测试编写者在创建 vendor.yaml 时就约定好的。
+
+然后测试通过断言 mock 请求计数来验证系统行为：
+
+```go
+func TestConfig_PartialAvailability(t *testing.T) {
+    t.Run("TC4.2-vendor-invalid-yaml", func(t *testing.T) {
+        e2e.Setup()
+        defer e2e.TearDown()
+
+        // POST 通知到共享 server，路由到 mapping_vendor（好）和 bad_vendor（配置损坏）
+        // → 共享 server 使用与正常测试相同的 testdata 目录
+        notifID := postNotification(t, e2e.ServerURL(), body)
+        status, results := waitForDelivery(t, e2e.ServerURL(), notifID, 15*time.Second)
+
+        // mapping_vendor: SUCCEEDED
+        // bad_vendor:  DEAD_LETTER → last_error 是 YAML 解析错误，不是 "not configured"
+
+        // 即使预期不会收到请求，mock 必须启动才能验证
+        assert.Empty(t, e2e.Vendor("bad_vendor").Requests(),
+            "bad_vendor should receive 0 requests (DEAD_LETTER)")
+    })
 }
 ```
 
@@ -237,6 +317,6 @@ func TestConfig_Scenario(t *testing.T) {
 | `full_chain_test.go` | 全链路投递测试 |
 | `mapping_content_test.go` | 映射引擎内容测试 |
 | `shutdown_test.go` | 优雅关闭相关测试 |
-| `config_test.go` | 配置加载器测试（FIXME: 应迁移到 internal/config） |
+| `config_test.go` | 配置边界测试（非法 YAML、路径不存在）——通过独立 server + HTTP API 验证 |
 | `config_validation_test.go` | 模板字段校验测试 |
 | `mq_debug_test.go` | MQ 连通性调试（基础设施验证，非业务测试） |

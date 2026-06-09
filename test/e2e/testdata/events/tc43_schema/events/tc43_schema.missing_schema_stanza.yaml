@@ -1,0 +1,3 @@
+event_type: tc43_schema.missing_schema_stanza
+description: Schema file with no schema field
+version: 1

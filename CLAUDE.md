@@ -31,15 +31,9 @@ this is a notification system to push messages for critical events to external s
 # commands
 
 ```bash
-go build .                       # build the CLI binary
 go vet ./...                     # what CI runs
-go test ./...                    # full test suite (CI-equivalent)
-go test -race ./...              # race detector
-
-# Cross-build matrix (CI runs this on every push):
-GOOS=windows go build ./...
-GOOS=darwin  go build ./...
-GOOS=linux   go build ./...
+./build.sh                       # build binary
+./test_e2e.sh                    # run end to end test
 ```
 
 # restriction

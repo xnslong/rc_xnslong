@@ -1,0 +1,8 @@
+event_type: tc42.vendor_errors
+description: Event for testing vendor config anomalies — routes to multiple vendors with different error modes
+version: 1
+schema:
+  type: object
+  properties:
+    id:
+      type: string

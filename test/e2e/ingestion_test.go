@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -27,17 +28,16 @@ type apiErrorResponse struct {
 }
 
 // @test-case TC1.1-valid_payload
-// Test 1.1.1: 有效提交通知 → 202 + data.notification_id
 func TestIngestion_HappyPath(t *testing.T) {
 	t.Run("TC1.1-valid_payload", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "ingest-happy-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "123", "user_id": "u1", "amount": 29900, "currency": "CNY"}
-		}`
+		}`, e2e.NewTestID("TC1.1-valid_payload"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -51,23 +51,23 @@ func TestIngestion_HappyPath(t *testing.T) {
 
 		data := result.Data
 		require.NotEmpty(t, data["notification_id"])
-		assert.Equal(t, "PENDING", data["status"])
+		assert.Equal(t, e2e.StatusPending, data["status"])
 		require.NotEmpty(t, data["created_at"])
 	})
 }
 
 // @test-case TC1.3-duplicate_idempotent_key
-// Test 1.1.2: 幂等键重复 → 同一 notification_id
 func TestIngestion_DuplicateIdempotentKey(t *testing.T) {
 	t.Run("TC1.3-duplicate_idempotent_key", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		key := e2e.NewTestID("TC1.3-duplicate_idempotent_key")
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "ingest-dup-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "456", "user_id": "u2", "amount": 10000, "currency": "USD"}
-		}`
+		}`, key)
 
 		// First POST
 		resp1, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
@@ -96,7 +96,6 @@ func TestIngestion_DuplicateIdempotentKey(t *testing.T) {
 }
 
 // @test-case TC1.2-invalid_json_body
-// Test 1.1.3: 无效 JSON → 400 INVALID_REQUEST
 func TestIngestion_InvalidJSON(t *testing.T) {
 	t.Run("TC1.2-invalid_json_body", func(t *testing.T) {
 		e2e.Setup()
@@ -115,16 +114,16 @@ func TestIngestion_InvalidJSON(t *testing.T) {
 }
 
 // @test-case TC1.2-empty_event
-// Test 1.1.4: event 为空 → 400 INVALID_REQUEST
 func TestIngestion_MissingEvent(t *testing.T) {
 	t.Run("TC1.2-empty_event", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "123"}
-		}`
+		}`, e2e.NewTestID("TC1.2-empty_event"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -139,17 +138,16 @@ func TestIngestion_MissingEvent(t *testing.T) {
 }
 
 // @test-case TC1.4-unregistered_event
-// Test 1.1.5: 事件类型未注册 → 422 EVENT_NOT_FOUND
 func TestIngestion_EventTypeNotFound(t *testing.T) {
 	t.Run("TC1.4-unregistered_event", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "unknown.event.type",
-			"idempotent_key": "unknown-event-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "123", "user_id": "u1", "amount": 100, "currency": "CNY"}
-		}`
+		}`, e2e.NewTestID("TC1.4-unregistered_event"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -164,18 +162,16 @@ func TestIngestion_EventTypeNotFound(t *testing.T) {
 }
 
 // @test-case TC1.4-missing_required_field
-// Test 1.1.6: payload 不符合 Schema → 422 SCHEMA_VALIDATION_FAILED + details
 func TestIngestion_SchemaValidationFailed(t *testing.T) {
 	t.Run("TC1.4-missing_required_field", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		// Test case: missing required field order_id
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "schema-fail-1",
+			"idempotent_key": "%s",
 			"payload": {"user_id": "u1", "amount": 100, "currency": "CNY"}
-		}`
+		}`, e2e.NewTestID("TC1.4-missing_required_field"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -191,7 +187,6 @@ func TestIngestion_SchemaValidationFailed(t *testing.T) {
 }
 
 // @test-case TC1.1-auto_idempotent_key
-// idempotent_key 不传自动生成
 func TestIngestion_AutoIdempotentKey(t *testing.T) {
 	t.Run("TC1.1-auto_idempotent_key", func(t *testing.T) {
 		e2e.Setup()
@@ -211,12 +206,11 @@ func TestIngestion_AutoIdempotentKey(t *testing.T) {
 		var result apiResponse
 		json.NewDecoder(resp.Body).Decode(&result)
 		assert.NotEmpty(t, result.Data["notification_id"])
-		assert.Equal(t, "PENDING", result.Data["status"])
+		assert.Equal(t, e2e.StatusPending, result.Data["status"])
 	})
 }
 
 // @test-case TC1.2-json_array_body
-// POST JSON array → 400 INVALID_REQUEST
 func TestIngestion_JsonArrayBody(t *testing.T) {
 	t.Run("TC1.2-json_array_body", func(t *testing.T) {
 		e2e.Setup()
@@ -236,7 +230,6 @@ func TestIngestion_JsonArrayBody(t *testing.T) {
 }
 
 // @test-case TC1.2-json_scalar_body
-// POST pure string → 400 INVALID_REQUEST
 func TestIngestion_JsonScalarBody(t *testing.T) {
 	t.Run("TC1.2-json_scalar_body", func(t *testing.T) {
 		e2e.Setup()
@@ -254,13 +247,13 @@ func TestIngestion_JsonScalarBody(t *testing.T) {
 }
 
 // @test-case TC1.2-invalid_event_type
-// POST event with wrong type (number) → 400 INVALID_REQUEST
 func TestIngestion_InvalidEventType(t *testing.T) {
 	t.Run("TC1.2-invalid_event_type", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{"event": 123, "idempotent_key": "tc-invalid-event-1", "payload": {"order_id": "1"}}`
+		body := fmt.Sprintf(`{"event": 123, "idempotent_key": "%s", "payload": {"order_id": "1"}}`,
+			e2e.NewTestID("TC1.2-invalid_event_type"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -274,17 +267,16 @@ func TestIngestion_InvalidEventType(t *testing.T) {
 }
 
 // @test-case TC1.4-wrong_field_type
-// amount 为 string 而非 integer → 422 SCHEMA_VALIDATION_FAILED + details
 func TestSchema_WrongFieldType(t *testing.T) {
 	t.Run("TC1.4-wrong_field_type", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "tc-wrong-type-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "123", "user_id": "u1", "amount": "not-a-number", "currency": "CNY"}
-		}`
+		}`, e2e.NewTestID("TC1.4-wrong_field_type"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -299,17 +291,16 @@ func TestSchema_WrongFieldType(t *testing.T) {
 }
 
 // @test-case TC1.4-enum_out_of_range
-// currency 为未注册的值 "GBP" → 422 SCHEMA_VALIDATION_FAILED + details
 func TestSchema_EnumOutOfRange(t *testing.T) {
 	t.Run("TC1.4-enum_out_of_range", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "tc-enum-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "123", "user_id": "u1", "amount": 100, "currency": "GBP"}
-		}`
+		}`, e2e.NewTestID("TC1.4-enum_out_of_range"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -324,17 +315,16 @@ func TestSchema_EnumOutOfRange(t *testing.T) {
 }
 
 // @test-case TC1.4-numeric_constraint
-// amount 为 -100 违反 minimum:0 → 422 SCHEMA_VALIDATION_FAILED + details
 func TestSchema_NumericConstraint(t *testing.T) {
 	t.Run("TC1.4-numeric_constraint", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "tc-num-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "123", "user_id": "u1", "amount": -100, "currency": "CNY"}
-		}`
+		}`, e2e.NewTestID("TC1.4-numeric_constraint"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -349,18 +339,16 @@ func TestSchema_NumericConstraint(t *testing.T) {
 }
 
 // @test-case TC1.4-multiple_errors
-// payload 同时缺 2 个必填字段 + 类型错误 → 422 + 2+ details
 func TestSchema_MultipleErrors(t *testing.T) {
 	t.Run("TC1.4-multiple_errors", func(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "tc-multi-1",
+			"idempotent_key": "%s",
 			"payload": {"amount": "not-a-number", "currency": "CNY"}
-		}`
-		// Missing order_id AND user_id, plus amount type mismatch
+		}`, e2e.NewTestID("TC1.4-multiple_errors"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -383,11 +371,11 @@ func TestIngestion_ListNotifications(t *testing.T) {
 	defer e2e.TearDown()
 
 	// Create a notification first
-	body := `{
+	body := fmt.Sprintf(`{
 		"event": "order.paid",
-		"idempotent_key": "list-test-1",
+		"idempotent_key": "%s",
 		"payload": {"order_id": "list1", "user_id": "u1", "amount": 100, "currency": "CNY"}
-	}`
+	}`, e2e.NewTestID("TC2"))
 
 	resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
@@ -424,11 +412,11 @@ func TestIngestion_ListNotificationsWithEventFilter(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
 
-	body := `{
+	body := fmt.Sprintf(`{
 		"event": "order.paid",
-		"idempotent_key": "list-filter-test-1",
+		"idempotent_key": "%s",
 		"payload": {"order_id": "list-filter", "user_id": "u1", "amount": 100, "currency": "CNY"}
-	}`
+	}`, e2e.NewTestID("TC2-list-filter"))
 
 	resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
@@ -463,11 +451,11 @@ func TestIngestion_ListNotificationsWithPagination(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
 
-	body := `{
+	body := fmt.Sprintf(`{
 		"event": "order.paid",
-		"idempotent_key": "list-pagination-test-1",
+		"idempotent_key": "%s",
 		"payload": {"order_id": "list-page", "user_id": "u1", "amount": 100, "currency": "CNY"}
-	}`
+	}`, e2e.NewTestID("TC2-list-pagination"))
 
 	resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)

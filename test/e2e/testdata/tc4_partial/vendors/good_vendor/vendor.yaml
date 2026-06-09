@@ -1,7 +1,7 @@
 vendor_id: "good_vendor"
-base_url: "http://example.com"
+base_url: "http://localhost:19092"
 retry_policy:
-  max_attempts: 3
+  max_attempts: 1
   base_delay: 1s
   max_delay: 10s
   multiplier: 2.0

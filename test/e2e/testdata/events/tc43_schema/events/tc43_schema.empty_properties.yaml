@@ -1,0 +1,6 @@
+event_type: tc43_schema.empty_properties
+description: Schema with empty properties (no validation)
+version: 1
+schema:
+  type: object
+  properties: {}

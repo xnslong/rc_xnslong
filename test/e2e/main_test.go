@@ -14,9 +14,22 @@ func TestMain(m *testing.M) {
 // runTests is a wrapper so TearDownSuite can run via defer before os.Exit.
 // unreachable_vendor is excluded because its test requires the port to
 // have no listener (simulating network failure). Tests that need it can
-// call StartVendor("unreachable_vendor") explicitly.
+// call StartVendor("unreachable_vendor_19999") explicitly.
+//
+// IncludeVendors declares vendors whose config is broken (unparseable YAML,
+// missing files, invalid retry) so their mocks still start. This reflects
+// the real-world invariant that a vendor's API server runs regardless of
+// the notification system's config state — the test framework must be able
+// to observe whether the system sends HTTP requests to them.
 func runTests(m *testing.M) int {
-	SetupSuite(ExcludeVendors("unreachable_vendor"))
+	SetupSuite(
+		ExcludeVendors("unreachable_vendor_19999"),
+		IncludeVendors(
+			VendorSpec{ID: "bad_vendor", Port: 18001},
+			VendorSpec{ID: "invalid_retry_vendor", Port: 18002},
+			VendorSpec{ID: "missing_yaml_vendor", Port: 18003},
+		),
+	)
 	defer TearDownSuite()
 
 	code := m.Run()

@@ -1,0 +1,11 @@
+vendor_id: "bad_contract_vendor_19095"
+base_url: "http://localhost:19095"
+retry_policy:
+  max_attempts: 1
+  base_delay: 1s
+  max_delay: 5s
+  multiplier: 2.0
+  jitter: 0.2
+response_judgment:
+  success:
+    type: http_status

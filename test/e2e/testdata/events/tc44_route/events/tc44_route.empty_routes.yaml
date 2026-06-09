@@ -1,0 +1,8 @@
+event_type: tc44_route.empty_routes
+description: Event whose route file has an empty routes list
+version: 1
+schema:
+  type: object
+  properties:
+    id:
+      type: string

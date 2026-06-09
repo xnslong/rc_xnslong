@@ -1,0 +1,8 @@
+event_type: tc45.contract_errors
+description: Event for testing delivery contract anomalies — routes to multiple vendors with different contract error modes
+version: 1
+schema:
+  type: object
+  properties:
+    id:
+      type: string

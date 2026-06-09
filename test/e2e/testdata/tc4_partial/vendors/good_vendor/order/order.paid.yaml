@@ -1,0 +1,10 @@
+event_type: order.paid
+request:
+  method: POST
+  path: /api/orders
+  headers:
+    Content-Type: application/json
+  body:
+    type: json
+    template:
+      order_id: "@{payload:id}"

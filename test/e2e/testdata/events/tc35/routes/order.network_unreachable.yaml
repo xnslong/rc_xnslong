@@ -1,3 +1,3 @@
 event_type: "order.network_unreachable"
 routes:
-  - vendor_id: "unreachable_vendor"
+  - vendor_id: "unreachable_vendor_19999"

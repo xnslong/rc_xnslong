@@ -1,4 +1,4 @@
 event_type: "order.paid"
 routes:
-  - vendor_id: "crm_system"
-  - vendor_id: "ad_platform"
+  - vendor_id: "crm_system_19091"
+  - vendor_id: "ad_platform_19092"

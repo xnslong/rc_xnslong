@@ -20,6 +20,30 @@ import (
 
 const defaultMQURL = "amqp://notify:notify@localhost:5672/"
 
+// Notification statuses, mirrored from internal/model for use in test assertions.
+const (
+	StatusPending         = "PENDING"
+	StatusDelivering      = "DELIVERING"
+	StatusSucceeded       = "SUCCEEDED"
+	StatusFailed          = "FAILED"
+	StatusPartiallyFailed = "PARTIALLY_FAILED"
+)
+
+// Delivery task statuses.
+const (
+	TaskStatusDelivering = "DELIVERING"
+	TaskStatusSucceeded  = "SUCCEEDED"
+	TaskStatusDeadLetter = "DEAD_LETTER"
+)
+
+// NewTestID generates a unique idempotent key using the test case ID as prefix.
+// Call from any test: `idempotent_key: e2e.NewTestID("TC3.1-matched_vendor_called")`
+// The nanosecond suffix ensures uniqueness across runs, so repeated `go test`
+// calls create fresh notifications rather than hitting idempotency.
+func NewTestID(tcID string) string {
+	return fmt.Sprintf("%s-%d", tcID, time.Now().UnixNano())
+}
+
 // ---------------------------------------------------------------------------
 // Package-level API
 // ---------------------------------------------------------------------------
@@ -36,10 +60,20 @@ func GlobalSuite() *Suite {
 
 var global *Suite
 
+// VendorSpec declares a vendor mock to be started by SetupSuite with a
+// specific port. Used with IncludeVendors to supplement vendors whose
+// configuration is intentionally broken (e.g. unparseable vendor.yaml) so
+// the test framework can start their mocks without reading vendor.yaml.
+type VendorSpec struct {
+	ID   string
+	Port int
+}
+
 // Option configures SetupSuite behavior.
 type Option func(*suiteConfig)
 
 type suiteConfig struct {
+	includeVendors []VendorSpec
 	excludeVendors []string
 }
 
@@ -49,6 +83,21 @@ type suiteConfig struct {
 func ExcludeVendors(ids ...string) Option {
 	return func(cfg *suiteConfig) {
 		cfg.excludeVendors = append(cfg.excludeVendors, ids...)
+	}
+}
+
+// IncludeVendors returns an Option that explicitly declares which vendors
+// need mock servers started during SetupSuite, along with their ports.
+//
+// This is needed when the config directory contains vendors with invalid
+// configuration (e.g. unparseable vendor.yaml) that prevents the config
+// scanner from cleanly discovering their port. In that case, IncludeVendors
+// lets the test declare the port that both the vendor.yaml and the test
+// agreed upon — the test framework starts the mock on that port regardless
+// of whether the system can parse the config.
+func IncludeVendors(specs ...VendorSpec) Option {
+	return func(cfg *suiteConfig) {
+		cfg.includeVendors = append(cfg.includeVendors, specs...)
 	}
 }
 
@@ -78,20 +127,61 @@ func SetupSuite(opts ...Option) {
 		log.Fatalf("e2e SetupSuite: load config: %v", err)
 	}
 
-	s := &Suite{
-		config:         loader,
-		projectRoot:    projRoot,
-		configDir:      testdataDir,
-		mockVendors:    make(map[string]*MockVendor),
-		excluded:       excluded,
+	// Build port overrides from IncludeVendors.
+	// These take priority over vendor.yaml's base_url port so that vendors
+	// with broken config can still have mocks started.
+	portOverrides := make(map[string]int)
+	for _, spec := range cfg.includeVendors {
+		portOverrides[spec.ID] = spec.Port
 	}
 
-	// Record the initial vendor set (excluded vendors are not in initialRunning)
+	s := &Suite{
+		config:        loader,
+		projectRoot:   projRoot,
+		configDir:     testdataDir,
+		mockVendors:   make(map[string]*MockVendor),
+		excluded:      excluded,
+		portOverrides: portOverrides,
+	}
+
+	// Record the initial vendor set — discovered via config scanning, plus
+	// any explicitly declared via IncludeVendors.
+	// Vendors with corrupt vendor.yaml still appear in GetAllVendorIDs()
+	// (the loader creates an error entry). If such a vendor also has a port
+	// override via IncludeVendors, we still start its mock — see
+	// startVendorMock for the fallback logic.
+	var initialVendors []string
 	for _, vendorID := range loader.GetAllVendorIDs() {
-		if !excluded[vendorID] {
-			s.initialRunningVendors = append(s.initialRunningVendors, vendorID)
+		if excluded[vendorID] {
+			continue
+		}
+		// If vendor config is loadable, start the mock normally.
+		// If not, only start if a port override exists (from IncludeVendors).
+		if _, err := loader.GetVendorConfig(vendorID); err != nil {
+			if _, ok := portOverrides[vendorID]; !ok {
+				log.Printf("e2e SetupSuite: skipping mock for vendor %s (config error: %v, no port override)", vendorID, err)
+				continue
+			}
+			log.Printf("e2e SetupSuite: starting vendor %s with port override (config error: %v)", vendorID, err)
+		}
+		initialVendors = append(initialVendors, vendorID)
+	}
+	for _, spec := range cfg.includeVendors {
+		if !excluded[spec.ID] {
+			// Add if not already in the set from config scanning.
+			found := false
+			for _, id := range initialVendors {
+				if id == spec.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				initialVendors = append(initialVendors, spec.ID)
+			}
 		}
 	}
+	s.initialRunningVendors = initialVendors
 	s.initialRunningVendorsSnapshot = make([]string, len(s.initialRunningVendors))
 	copy(s.initialRunningVendorsSnapshot, s.initialRunningVendors)
 
@@ -283,18 +373,19 @@ type Suite struct {
 	serverURL string
 	notifCmd  *exec.Cmd
 
-	mockVendors         map[string]*MockVendor
-	mockVendorMu        sync.Mutex
-	config              *config.Loader
-	projectRoot         string
-	configDir           string
+	mockVendors  map[string]*MockVendor
+	mockVendorMu sync.Mutex
+	config       *config.Loader
+	projectRoot  string
+	configDir    string
 
 	// State tracking for TearDown restoration
-	excluded                    map[string]bool
-	initialRunningVendors       []string // populated during SetupSuite
-	initialRunningVendorsSnapshot []string // immutable copy of initial state
-	serverStopped               bool
-	cleanups                    []func()
+	excluded                      map[string]bool
+	portOverrides                 map[string]int // port by vendor ID, populated from IncludeVendors
+	initialRunningVendors         []string       // populated during SetupSuite
+	initialRunningVendorsSnapshot []string       // immutable copy of initial state
+	serverStopped                 bool
+	cleanups                      []func()
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +403,7 @@ func (s *Suite) startServerProcess() {
 		return
 	}
 
-	binaryPath, err := BuildBinary(s.projectRoot)
+	binaryPath, err := BinaryPath(s.projectRoot)
 	if err != nil {
 		log.Fatalf("e2e: build notification-server: %v", err)
 	}
@@ -382,6 +473,20 @@ func (s *Suite) restoreServer() {
 // Mock vendor lifecycle
 // ---------------------------------------------------------------------------
 
+// startVendorMock starts a mock server for the given vendor.
+//
+// Port resolution priority:
+//  1. If the vendor ID has a port override (from IncludeVendors), use it.
+//     This covers vendors with broken vendor.yaml that still need a mock —
+//     the test declares the port explicitly, independent of whether the
+//     system can parse their config.
+//  2. Otherwise, read port from vendor.yaml's base_url.
+//
+// Priority 1 exists because a vendor's API server is always running
+// regardless of the notification system's config state. The test framework
+// must be able to start a mock even when the system cannot parse the config
+// — only then can we distinguish "system correctly skipped the vendor" from
+// "system had a bug but we couldn't detect it because no mock was listening."
 func (s *Suite) startVendorMock(vendorID string) error {
 	s.mockVendorMu.Lock()
 	defer s.mockVendorMu.Unlock()
@@ -390,22 +495,32 @@ func (s *Suite) startVendorMock(vendorID string) error {
 		return nil // already running
 	}
 
-	vendorCfg, err := s.config.GetVendorConfig(vendorID)
-	if err != nil {
-		return fmt.Errorf("vendor config not found: %w", err)
+	var port string
+
+	// Priority 1: check for port override from IncludeVendors
+	if overridePort, ok := s.portOverrides[vendorID]; ok {
+		port = fmt.Sprintf("%d", overridePort)
 	}
 
-	u, err := url.Parse(vendorCfg.BaseURL)
-	if err != nil {
-		return fmt.Errorf("parse vendor base URL %q: %w", vendorCfg.BaseURL, err)
+	// Priority 2: read from vendor.yaml's base_url
+	if port == "" {
+		vendorCfg, err := s.config.GetVendorConfig(vendorID)
+		if err != nil {
+			return fmt.Errorf("vendor %s: config error (%w) and no port override from IncludeVendors", vendorID, err)
+		}
+		u, err := url.Parse(vendorCfg.BaseURL)
+		if err != nil {
+			return fmt.Errorf("vendor %s: parse base URL %q: %w", vendorID, vendorCfg.BaseURL, err)
+		}
+		port = u.Port()
 	}
 
 	mv := NewMockVendor()
-	if err := mv.Start(":" + u.Port()); err != nil {
-		return fmt.Errorf("start mock vendor %s on port %s: %w", vendorID, u.Port(), err)
+	if err := mv.Start(":" + port); err != nil {
+		return fmt.Errorf("start mock vendor %s on port %s: %w", vendorID, port, err)
 	}
 	s.mockVendors[vendorID] = mv
-	log.Printf("e2e: mock vendor %s started on port %s", vendorID, u.Port())
+	log.Printf("e2e: mock vendor %s started on port %s", vendorID, port)
 	return nil
 }
 
@@ -494,25 +609,13 @@ func waitForHealth(url string, timeout time.Duration) error {
 	return fmt.Errorf("health check %s did not return 200 within %v", url, timeout)
 }
 
-// BuildBinary builds the notification-server binary via build.sh and returns its path.
-func BuildBinary(projectRoot string) (string, error) {
+// BinaryPath returns the path to the notification-server binary.
+// The binary must already exist — test_e2e.sh builds it before running tests.
+func BinaryPath(projectRoot string) (string, error) {
 	binaryPath := filepath.Join(projectRoot, "output", "notification-server")
 
-	if _, err := os.Stat(binaryPath); err == nil {
-		return binaryPath, nil
-	}
-
-	buildScript := filepath.Join(projectRoot, "build.sh")
-	cmd := exec.Command("/bin/bash", buildScript)
-	cmd.Dir = projectRoot
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("build.sh failed: %w", err)
-	}
-
 	if _, err := os.Stat(binaryPath); err != nil {
-		return "", fmt.Errorf("binary not found at %s after running build.sh: %w", binaryPath, err)
+		return "", fmt.Errorf("binary not found at %s (run build.sh or test_e2e.sh first): %w", binaryPath, err)
 	}
 	return binaryPath, nil
 }

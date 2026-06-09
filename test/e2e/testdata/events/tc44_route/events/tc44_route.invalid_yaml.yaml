@@ -1,0 +1,8 @@
+event_type: tc44_route.invalid_yaml
+description: Event whose route file has invalid YAML content
+version: 1
+schema:
+  type: object
+  properties:
+    id:
+      type: string

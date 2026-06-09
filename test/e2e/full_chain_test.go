@@ -22,11 +22,11 @@ func TestFullChain_Success(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
 
-	body := `{
+	body := fmt.Sprintf(`{
 		"event": "order.paid",
-		"idempotent_key": "chain-success-1",
+		"idempotent_key": "%s",
 		"payload": {"order_id": "ORD-001", "user_id": "u1", "amount": 29900, "currency": "CNY"}
-	}`
+	}`, e2e.NewTestID("TC3.1-matched_vendor_called"))
 
 	resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
@@ -39,7 +39,7 @@ func TestFullChain_Success(t *testing.T) {
 	require.NotEmpty(t, notifID)
 
 	// Wait for crm_system vendor to receive the request
-	vendorReq := e2e.Vendor("crm_system").WaitRequest(15 * time.Second)
+	vendorReq := e2e.Vendor("crm_system_19091").WaitRequest(15 * time.Second)
 	require.NotNil(t, vendorReq, "crm_system vendor should receive the request")
 
 	// @test-case TC3.1-matched_vendor_called
@@ -49,9 +49,9 @@ func TestFullChain_Success(t *testing.T) {
 
 	// @test-case TC3.2-status_succeeded
 	t.Run("TC3.2-status_succeeded", func(t *testing.T) {
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -65,11 +65,14 @@ func TestFullChain_IdempotentNoResend(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		// Generate key once, reuse for both POSTs to test idempotency.
+		key := e2e.NewTestID("TC3.2-no_duplicate_delivery")
+
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "chain-dup-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "ORD-002", "user_id": "u2", "amount": 15000, "currency": "CNY"}
-		}`
+		}`, key)
 
 		// First POST
 		resp1, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
@@ -82,11 +85,11 @@ func TestFullChain_IdempotentNoResend(t *testing.T) {
 		id1 := fmt.Sprint(result1.Data["notification_id"])
 
 		// Wait for the first crm_system vendor call to happen
-		vendorReq1 := e2e.Vendor("crm_system").WaitRequest(15 * time.Second)
+		vendorReq1 := e2e.Vendor("crm_system_19091").WaitRequest(15 * time.Second)
 		require.NotNil(t, vendorReq1, "crm_system should receive the first request")
 
 		// Wait for SUCCEEDED
-		_, err = e2e.WaitForNotificationStatus(id1, []string{"SUCCEEDED"}, 10*time.Second)
+		_, err = e2e.WaitForNotificationStatus(id1, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
 
 		// Second POST with same payload
@@ -101,7 +104,7 @@ func TestFullChain_IdempotentNoResend(t *testing.T) {
 		assert.Equal(t, id1, id2, "same idempotent_key must return same notification_id")
 
 		// Verify vendor was only called once (no additional request for the duplicate)
-		allReqs := e2e.Vendor("crm_system").Requests()
+		allReqs := e2e.Vendor("crm_system_19091").Requests()
 		assert.Len(t, allReqs, 1, "crm_system should be called only once for duplicate idempotent_key")
 	})
 }
@@ -116,12 +119,11 @@ func TestFullChain_NoMatchingVendor(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		// Use an event that has no routing rules
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "user.registered",
-			"idempotent_key": "chain-nomatch-1",
+			"idempotent_key": "%s",
 			"payload": {"user_id": "u3", "name": "Alice"}
-		}`
+		}`, e2e.NewTestID("TC3.4-no_rule_failed"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -135,9 +137,9 @@ func TestFullChain_NoMatchingVendor(t *testing.T) {
 		require.NotEmpty(t, notifID)
 
 		// Wait for FAILED (no vendor matched)
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"FAILED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusFailed}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "FAILED", status)
+		assert.Equal(t, e2e.StatusFailed, status)
 	})
 }
 
@@ -152,18 +154,18 @@ func TestFullChain_RetryExhaustedToDeadLetter(t *testing.T) {
 		defer e2e.TearDown()
 
 		// Register mock vendor to always return 503 (retryable failure) for both vendors
-		e2e.Vendor("crm_system").RegisterBehavior([]e2e.MockResponse{
+		e2e.Vendor("crm_system_19091").RegisterBehavior([]e2e.MockResponse{
 			{StatusCode: 503, Body: `{"error":"service unavailable"}`},
 		})
-		e2e.Vendor("ad_platform").RegisterBehavior([]e2e.MockResponse{
+		e2e.Vendor("ad_platform_19092").RegisterBehavior([]e2e.MockResponse{
 			{StatusCode: 503, Body: `{"error":"service unavailable"}`},
 		})
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "chain-deadletter-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "ORD-003", "user_id": "u4", "amount": 5000, "currency": "CNY"}
-		}`
+		}`, e2e.NewTestID("TC3.5-retry_exhausted"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -177,9 +179,9 @@ func TestFullChain_RetryExhaustedToDeadLetter(t *testing.T) {
 		// Wait for FAILED (retries exhausted → all tasks dead_letter)
 		// Retry policy: max_attempts=3, base_delay=1s, multiplier=2, max_delay=5s
 		// Delays: 1st retry ~1s, 2nd retry ~2s (capped at 5s)
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"FAILED", "PARTIALLY_FAILED"}, 30*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusFailed, e2e.StatusPartiallyFailed}, 30*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "FAILED", status, "notification should be FAILED when all tasks dead-letter")
+		assert.Equal(t, e2e.StatusFailed, status, "notification should be FAILED when all tasks dead-letter")
 	})
 }
 
@@ -192,11 +194,11 @@ func TestFullChain_NetworkUnreachable(t *testing.T) {
 
 		// unreachable_vendor is excluded by SetupSuite (no mock started).
 		// The server will try to connect to localhost:19999 and get connection refused.
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.network_unreachable",
-			"idempotent_key": "chain-unreachable-1",
+			"idempotent_key": "%s",
 			"payload": {}
-		}`
+		}`, e2e.NewTestID("TC3.5-network_unreachable"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -209,9 +211,9 @@ func TestFullChain_NetworkUnreachable(t *testing.T) {
 
 		// The vendor URL points to localhost:19999 where nothing listens → connection refused
 		// Retry policy: max_attempts=3, so it will retry and eventually FAILED
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"FAILED"}, 30*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusFailed}, 30*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "FAILED", status, "notification should be FAILED when vendor is unreachable")
+		assert.Equal(t, e2e.StatusFailed, status, "notification should be FAILED when vendor is unreachable")
 	})
 }
 
@@ -226,15 +228,15 @@ func TestFullChain_PartialSuccessMultiVendor(t *testing.T) {
 		defer e2e.TearDown()
 
 		// ad_platform → failure, crm_system defaults to 200
-		e2e.Vendor("ad_platform").RegisterBehavior([]e2e.MockResponse{
+		e2e.Vendor("ad_platform_19092").RegisterBehavior([]e2e.MockResponse{
 			{StatusCode: 503, Body: `{"error":"service unavailable"}`},
 		})
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "chain-partial-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "ORD-004", "user_id": "u5", "amount": 8000, "currency": "CNY"}
-		}`
+		}`, e2e.NewTestID("TC3.6-partial_success"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -246,9 +248,9 @@ func TestFullChain_PartialSuccessMultiVendor(t *testing.T) {
 		notifID := fmt.Sprint(result.Data["notification_id"])
 
 		// Wait for PARTIALLY_FAILED (1 succeeds, 1 fails)
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"PARTIALLY_FAILED", "SUCCEEDED", "FAILED"}, 30*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusPartiallyFailed, e2e.StatusSucceeded, e2e.StatusFailed}, 30*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "PARTIALLY_FAILED", status, "notification should be PARTIALLY_FAILED when 1 of 2 vendors fail")
+		assert.Equal(t, e2e.StatusPartiallyFailed, status, "notification should be PARTIALLY_FAILED when 1 of 2 vendors fail")
 	})
 }
 
@@ -260,11 +262,11 @@ func TestFullChain_UnmatchedVendorNotCalled(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
 
-	body := `{
+	body := fmt.Sprintf(`{
 		"event": "order.paid",
-		"idempotent_key": "chain-unmatched-1",
+		"idempotent_key": "%s",
 		"payload": {"order_id": "ORD-005", "user_id": "u6", "amount": 12000, "currency": "CNY"}
-	}`
+	}`, e2e.NewTestID("TC3.3-all_matched_vendors"))
 
 	resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
@@ -276,11 +278,11 @@ func TestFullChain_UnmatchedVendorNotCalled(t *testing.T) {
 	notifID := fmt.Sprint(result.Data["notification_id"])
 
 	// Wait for SUCCEEDED
-	_, err = e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 30*time.Second)
+	_, err = e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 30*time.Second)
 	require.NoError(t, err)
 
-	crmReqs := e2e.Vendor("crm_system").Requests()
-	adReqs := e2e.Vendor("ad_platform").Requests()
+	crmReqs := e2e.Vendor("crm_system_19091").Requests()
+	adReqs := e2e.Vendor("ad_platform_19092").Requests()
 
 	// @test-case TC3.3-all_matched_vendors
 	t.Run("TC3.3-all_matched_vendors", func(t *testing.T) {
@@ -307,11 +309,11 @@ func TestFullChain_CompletedNotification(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "chain-completed-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "ORD-COMP", "user_id": "u-comp", "amount": 100, "currency": "CNY"}
-		}`
+		}`, e2e.NewTestID("TC2.1-completed_notification"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
@@ -324,9 +326,9 @@ func TestFullChain_CompletedNotification(t *testing.T) {
 		require.NotEmpty(t, notifID)
 
 		// Wait for SUCCEEDED
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 30*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 30*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 
 		// GET full notification
 		getResp, err := http.Get(e2e.ServerURL() + "/api/v1/notifications/" + notifID)
@@ -338,7 +340,7 @@ func TestFullChain_CompletedNotification(t *testing.T) {
 			Data map[string]any `json:"data"`
 		}
 		json.NewDecoder(getResp.Body).Decode(&getResult)
-		assert.Equal(t, "SUCCEEDED", getResult.Data["status"])
+		assert.Equal(t, e2e.StatusSucceeded, getResult.Data["status"])
 		assert.NotEmpty(t, getResult.Data["delivery_results"], "delivery_results should be present")
 	})
 }
@@ -355,11 +357,11 @@ func TestFullChain_NonexistentNotification(t *testing.T) {
 		defer e2e.TearDown()
 
 		// POST a notification first (confirm server is up)
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "order.paid",
-			"idempotent_key": "chain-nonexist-1",
+			"idempotent_key": "%s",
 			"payload": {"order_id": "ORD-NX", "user_id": "u-nx", "amount": 100, "currency": "CNY"}
-		}`
+		}`, e2e.NewTestID("TC2.2-nonexistent_notification"))
 
 		resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
 		require.NoError(t, err)

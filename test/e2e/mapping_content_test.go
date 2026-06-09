@@ -43,13 +43,14 @@ func TestMapping_FieldRef(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
 
-	mv := e2e.Vendor("mapping_vendor")
+	mv := e2e.Vendor("mapping_vendor_19093")
 
-	body := `{
+	body := fmt.Sprintf(`{
 		"event": "tc371.field_ref",
-		"idempotent_key": "tc371-field-ref-1",
+		"idempotent_key": "%s",
 		"payload": {"order_id": "123", "a": {"b": {"c": "v"}}, "str": "hello", "id": 123}
-	}`
+	}
+`, e2e.NewTestID("TC3.7-pure_field_ref"))
 
 	notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -67,9 +68,9 @@ func TestMapping_FieldRef(t *testing.T) {
 	assert.Equal(t, "static-value", gotBody["static_val"]) // TC3.7-static_template
 	assert.Equal(t, "user-123", gotBody["mixed_val"])     // TC3.7-mixed_template
 
-	status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+	assert.Equal(t, e2e.StatusSucceeded, status)
 }
 
 // ---------------------------------------------------------------------------
@@ -84,13 +85,14 @@ func TestMapping_SourceDirective(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
 
-	mv := e2e.Vendor("mapping_vendor")
+	mv := e2e.Vendor("mapping_vendor_19093")
 
-	body := `{
+	body := fmt.Sprintf(`{
 		"event": "tc372.source",
-		"idempotent_key": "tc372-source-1",
+		"idempotent_key": "%s",
 		"payload": {"count": 42, "active": true, "note": null, "id": 42}
-	}`
+	}
+`, e2e.NewTestID("TC3.7-source_integer"))
 
 	notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -106,9 +108,9 @@ func TestMapping_SourceDirective(t *testing.T) {
 	assert.Equal(t, nil, gotBody["note"], "null preserved")                           // TC3.7-source_null
 	assert.Equal(t, "id_42", gotBody["prefixed"], "prefix+suffix → string")           // TC3.7-source_prefix_suffix
 
-	status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+	assert.Equal(t, e2e.StatusSucceeded, status)
 }
 
 // ---------------------------------------------------------------------------
@@ -123,13 +125,14 @@ func TestMapping_TypeConversion(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
 
-	mv := e2e.Vendor("mapping_vendor")
+	mv := e2e.Vendor("mapping_vendor_19093")
 
-	body := `{
+	body := fmt.Sprintf(`{
 		"event": "tc373.type",
-		"idempotent_key": "tc373-type-1",
+		"idempotent_key": "%s",
 		"payload": {"count": 42, "count_str": "42", "price": "29.99", "flag": 1}
-	}`
+	}
+`, e2e.NewTestID("TC3.7-type_int_to_string"))
 
 	notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -151,9 +154,9 @@ func TestMapping_TypeConversion(t *testing.T) {
 
 	assert.Equal(t, true, gotBody["as_bool"], "int→bool")                  // TC3.7-type_int_to_bool
 
-	status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+	status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, "SUCCEEDED", status)
+	assert.Equal(t, e2e.StatusSucceeded, status)
 }
 
 // ---------------------------------------------------------------------------
@@ -168,23 +171,24 @@ func TestMapping_InvalidConversion(t *testing.T) {
 
 		// POST with "abc" as count — engine fails to convert "abc" to integer
 		// The worker gets an error from BuildRequest and goes to dead_letter
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc373.invalid",
-			"idempotent_key": "tc373-invalid-1",
+			"idempotent_key": "%s",
 			"payload": {"count": "abc"}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-type_invalid_conversion"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
 		// Notification should become FAILED since all tasks will dead-letter
 		// retry_policy has max_attempts=1, so one failure → dead_letter
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"FAILED"}, 15*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusFailed}, 15*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "FAILED", status)
+		assert.Equal(t, e2e.StatusFailed, status)
 
 		// The vendor receives 0 requests from this notification because the
 		// engine fails before making any HTTP call.
-		assert.Empty(t, e2e.Vendor("mapping_vendor").Requests(),
+		assert.Empty(t, e2e.Vendor("mapping_vendor_19093").Requests(),
 			"vendor should not receive any request when mapping fails")
 	})
 }
@@ -199,13 +203,14 @@ func TestMapping_NoExplicitType(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc373.no_explicit",
-			"idempotent_key": "tc373-no-explicit-1",
+			"idempotent_key": "%s",
 			"payload": {"count": 42}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-type_no_explicit"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -219,9 +224,9 @@ func TestMapping_NoExplicitType(t *testing.T) {
 		assert.True(t, ok, "count should be a number")
 		assert.Equal(t, float64(42), count)
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -235,13 +240,14 @@ func TestMapping_FormatConversion(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc374.format",
-			"idempotent_key": "tc374-format-1",
+			"idempotent_key": "%s",
 			"payload": {"paid_at": 1716518400}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-format_timestamp"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -253,9 +259,9 @@ func TestMapping_FormatConversion(t *testing.T) {
 
 		assert.Equal(t, "2024-05-24", gotBody["formatted_date"], "timestamp→formatted date")
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -269,15 +275,16 @@ func TestMapping_EachBasic(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_basic",
-			"idempotent_key": "tc375-each-basic-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"products": [{"id": "p1", "qty": 3}, {"id": "p2", "qty": 5}]
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_basic"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -293,9 +300,9 @@ func TestMapping_EachBasic(t *testing.T) {
 		}
 		assert.Equal(t, expected, gotBody["products_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -305,15 +312,16 @@ func TestMapping_EachWithFormat(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_with_format",
-			"idempotent_key": "tc375-each-format-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"orders": [{"date": 1716518400, "total": 100}]
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_with_format"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -328,9 +336,9 @@ func TestMapping_EachWithFormat(t *testing.T) {
 		}
 		assert.Equal(t, expected, gotBody["orders_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -340,15 +348,16 @@ func TestMapping_EachWithType(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_with_type",
-			"idempotent_key": "tc375-each-type-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"items": [{"price": "29.99", "count": "3"}]
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_with_type"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -364,9 +373,9 @@ func TestMapping_EachWithType(t *testing.T) {
 		assert.InDelta(t, 29.99, item["price"], 0.001)
 		assert.Equal(t, float64(3), item["count"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -376,15 +385,16 @@ func TestMapping_EachStaticMixed(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_static",
-			"idempotent_key": "tc375-each-static-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"products": [{"id": "p1"}]
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_static_mixed"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -399,9 +409,9 @@ func TestMapping_EachStaticMixed(t *testing.T) {
 		}
 		assert.Equal(t, expected, gotBody["products_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -411,15 +421,16 @@ func TestMapping_EachNested(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_nested",
-			"idempotent_key": "tc375-each-nested-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"orders": [{"id": "o1", "items": [{"name": "apple", "price": 5}]}]
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_nested"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -439,9 +450,9 @@ func TestMapping_EachNested(t *testing.T) {
 		}
 		assert.Equal(t, expected, gotBody["orders_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -451,16 +462,17 @@ func TestMapping_EachPayloadRef(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_payload_ref",
-			"idempotent_key": "tc375-each-payload-ref-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"user_id": "u_001",
 				"products": [{"id": "p1", "qty": 3}]
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_payload_ref"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -475,9 +487,9 @@ func TestMapping_EachPayloadRef(t *testing.T) {
 		}
 		assert.Equal(t, expected, gotBody["products_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -487,15 +499,16 @@ func TestMapping_EachEmptyArray(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_empty",
-			"idempotent_key": "tc375-each-empty-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"products": []
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_empty_array"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -508,9 +521,9 @@ func TestMapping_EachEmptyArray(t *testing.T) {
 		expected := []any{}
 		assert.Equal(t, expected, gotBody["products_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -520,24 +533,25 @@ func TestMapping_EachNotArray(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_not_array",
-			"idempotent_key": "tc375-each-not-array-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"products": "not_an_array"
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_not_array"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
 		// Notification should become FAILED because mapping fails for non-array $each source
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"FAILED"}, 15*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusFailed}, 15*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "FAILED", status)
+		assert.Equal(t, e2e.StatusFailed, status)
 
 		// The vendor receives 0 requests from this notification because the
 		// engine fails before making any HTTP call.
-		assert.Empty(t, e2e.Vendor("mapping_vendor").Requests(),
+		assert.Empty(t, e2e.Vendor("mapping_vendor_19093").Requests(),
 			"vendor should not receive any request when $each source is not an array")
 	})
 }
@@ -552,15 +566,16 @@ func TestMapping_EachPrimitive(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_primitive",
-			"idempotent_key": "tc375-each-primitive-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"produce_list": [1, 2, 3]
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_primitive"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -577,9 +592,9 @@ func TestMapping_EachPrimitive(t *testing.T) {
 		}
 		assert.Equal(t, expected, gotBody["items_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -589,15 +604,16 @@ func TestMapping_EachPrimitiveWithType(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_primitive_with_type",
-			"idempotent_key": "tc375-each-primitive-type-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"produce_list": [1, 2, 3]
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_primitive_with_type"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -614,9 +630,9 @@ func TestMapping_EachPrimitiveWithType(t *testing.T) {
 		}
 		assert.Equal(t, expected, gotBody["items_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -626,15 +642,16 @@ func TestMapping_EachPrimitiveWithFormat(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_primitive_with_format",
-			"idempotent_key": "tc375-each-primitive-format-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"timestamps": [1716518400, 1716604800]
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_primitive_with_format"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -650,9 +667,9 @@ func TestMapping_EachPrimitiveWithFormat(t *testing.T) {
 		}
 		assert.Equal(t, expected, gotBody["items_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }
 
@@ -662,15 +679,16 @@ func TestMapping_EachPrimitiveEmpty(t *testing.T) {
 		e2e.Setup()
 		defer e2e.TearDown()
 
-		mv := e2e.Vendor("mapping_vendor")
+		mv := e2e.Vendor("mapping_vendor_19093")
 
-		body := `{
+		body := fmt.Sprintf(`{
 			"event": "tc375.each_primitive_empty",
-			"idempotent_key": "tc375-each-primitive-empty-1",
+			"idempotent_key": "%s",
 			"payload": {
 				"produce_list": []
 			}
-		}`
+		}
+`, e2e.NewTestID("TC3.7-each_primitive_empty"))
 
 		notifID := postAndGetID(t, e2e.ServerURL()+"/api/v1/notifications", body)
 
@@ -683,8 +701,8 @@ func TestMapping_EachPrimitiveEmpty(t *testing.T) {
 		expected := []any{}
 		assert.Equal(t, expected, gotBody["items_mapped"])
 
-		status, err := e2e.WaitForNotificationStatus(notifID, []string{"SUCCEEDED"}, 10*time.Second)
+		status, err := e2e.WaitForNotificationStatus(notifID, []string{e2e.StatusSucceeded}, 10*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "SUCCEEDED", status)
+		assert.Equal(t, e2e.StatusSucceeded, status)
 	})
 }

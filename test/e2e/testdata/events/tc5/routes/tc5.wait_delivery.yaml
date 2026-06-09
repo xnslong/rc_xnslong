@@ -1,3 +1,3 @@
 event_type: "tc5.wait_delivery"
 routes:
-  - vendor_id: "sd-wait-vendor"
+  - vendor_id: "sd_wait_vendor_19101"

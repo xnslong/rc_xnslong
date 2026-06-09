@@ -1,0 +1,10 @@
+event_type: "tc41.invalid_config"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      order_id: "@{payload:id}"

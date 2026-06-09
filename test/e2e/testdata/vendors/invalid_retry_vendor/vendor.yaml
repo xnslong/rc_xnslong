@@ -1,0 +1,11 @@
+vendor_id: "invalid_retry_vendor"
+base_url: "http://localhost:18002"
+retry_policy:
+  max_attempts: 3
+  base_delay: "abc"
+  max_delay: 5s
+  multiplier: 2.0
+  jitter: 0.2
+response_judgment:
+  success:
+    type: http_status

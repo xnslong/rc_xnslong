@@ -1,0 +1,8 @@
+event_type: tc44_route.missing
+description: Event with a valid schema but no route file — tests route file missing behavior
+version: 1
+schema:
+  type: object
+  properties:
+    id:
+      type: string

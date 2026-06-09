@@ -1,0 +1,7 @@
+event_type: tc45.contract_errors
+routes:
+  - vendor_id: mapping_vendor_19093
+  - vendor_id: missing_contract_vendor_19098
+  - vendor_id: bad_contract_vendor_19095
+  - vendor_id: contract_missing_request_19096
+  - vendor_id: contract_missing_body_19097

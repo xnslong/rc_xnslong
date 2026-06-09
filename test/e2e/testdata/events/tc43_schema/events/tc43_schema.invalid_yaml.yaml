@@ -1,0 +1,8 @@
+event_type: tc43_schema.invalid_yaml
+schema:
+  type: object
+  properties:
+    id:
+      type: string
+  required: [id]
+  }invalid yaml content

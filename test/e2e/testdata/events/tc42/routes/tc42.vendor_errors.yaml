@@ -1,0 +1,6 @@
+event_type: tc42.vendor_errors
+routes:
+  - vendor_id: mapping_vendor_19093
+  - vendor_id: bad_vendor
+  - vendor_id: missing_yaml_vendor
+  - vendor_id: invalid_retry_vendor

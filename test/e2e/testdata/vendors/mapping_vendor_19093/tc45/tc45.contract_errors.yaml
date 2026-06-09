@@ -1,0 +1,10 @@
+event_type: "tc45.contract_errors"
+request:
+  method: POST
+  path: "/api/notify"
+  headers:
+    Content-Type: "application/json"
+  body:
+    type: mapping
+    template:
+      id: "@{payload:id}"

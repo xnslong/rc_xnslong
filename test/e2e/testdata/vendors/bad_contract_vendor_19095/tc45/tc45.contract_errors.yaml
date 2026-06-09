@@ -1,0 +1,6 @@
+event_type: "tc45.contract_errors"
+request:
+  method: POST
+  path: "/api/notify"
+  body
+    type: mapping
