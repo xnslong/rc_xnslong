@@ -414,6 +414,8 @@ GET /api/v1/notifications/:notification_id
 
 #### 3.2.3 列表查询通知
 
+> **FIXME**: 当前所有 filter 参数均为非必填，允许无条件的全量拉取，存在安全性（数据泄露）和稳定性（全表扫描）风险。应当要求至少一个 filter 参数必填（如 `caller_id` 或 `event`），从 API 层面禁止无筛选条件的查询。
+
 ```
 GET /api/v1/notifications?caller_id=order-service&event=order.paid&status=FAILED&page=1&page_size=20
 ```
