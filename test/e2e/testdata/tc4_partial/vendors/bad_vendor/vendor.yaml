@@ -1,6 +1,0 @@
-vendor_id: "bad_vendor"
-request:
-  method: "POST"
-  url: "http://example.com/api"
-  headers
-    Content-Type: "application/json"
