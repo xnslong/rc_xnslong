@@ -366,6 +366,7 @@ func TestSchema_MultipleErrors(t *testing.T) {
 // List Notifications API tests
 // ---------------------------------------------------------------------------
 
+// @test-case TC2.3-list-with-event-filter
 func TestIngestion_ListNotificationsWithEventFilter(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
@@ -405,6 +406,7 @@ func TestIngestion_ListNotificationsWithEventFilter(t *testing.T) {
 	}
 }
 
+// @test-case TC2.4-list-with-pagination
 func TestIngestion_ListNotificationsWithPagination(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
