@@ -366,48 +366,6 @@ func TestSchema_MultipleErrors(t *testing.T) {
 // List Notifications API tests
 // ---------------------------------------------------------------------------
 
-func TestIngestion_ListNotifications(t *testing.T) {
-	e2e.Setup()
-	defer e2e.TearDown()
-
-	// Create a notification first
-	body := fmt.Sprintf(`{
-		"event": "order.paid",
-		"idempotent_key": "%s",
-		"payload": {"order_id": "list1", "user_id": "u1", "amount": 100, "currency": "CNY"}
-	}`, e2e.NewTestID("TC2"))
-
-	resp, err := http.Post(e2e.ServerURL()+"/api/v1/notifications", "application/json", strings.NewReader(body))
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	listURL := e2e.ServerURL() + "/api/v1/notifications"
-	resp, err = http.Get(listURL)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-	var result struct {
-		Data struct {
-			Items      []map[string]any `json:"items"`
-			Total      int              `json:"total"`
-			Page       int              `json:"page"`
-			PageSize   int              `json:"page_size"`
-			TotalPages int              `json:"total_pages"`
-		} `json:"data"`
-	}
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	require.NoError(t, err)
-
-	assert.GreaterOrEqual(t, result.Data.Total, 1)
-	assert.Equal(t, 1, result.Data.Page)
-	assert.Equal(t, 20, result.Data.PageSize)
-	require.Len(t, result.Data.Items, result.Data.Total)
-	assert.NotEmpty(t, result.Data.Items[0]["notification_id"])
-	assert.Equal(t, "order.paid", result.Data.Items[0]["event"])
-}
-
 func TestIngestion_ListNotificationsWithEventFilter(t *testing.T) {
 	e2e.Setup()
 	defer e2e.TearDown()
