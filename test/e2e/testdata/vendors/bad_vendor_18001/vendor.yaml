@@ -1,0 +1,7 @@
+vendor_id: "bad_vendor_18001"
+base_url: "http://localhost:18001"
+request:
+  method: "POST"
+  path: "/api/notify"
+  headers
+    Content-Type: "application/json"

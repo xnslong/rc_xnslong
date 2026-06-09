@@ -1,4 +1,4 @@
-vendor_id: "invalid_retry_vendor"
+vendor_id: "invalid_retry_vendor_18002"
 base_url: "http://localhost:18002"
 retry_policy:
   max_attempts: 3

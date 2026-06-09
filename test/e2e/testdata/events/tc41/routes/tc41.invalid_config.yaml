@@ -1,4 +1,4 @@
 event_type: tc41.invalid_config
 routes:
   - vendor_id: mapping_vendor_19093
-  - vendor_id: bad_vendor
+  - vendor_id: bad_vendor_18001

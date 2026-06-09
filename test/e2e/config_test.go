@@ -83,7 +83,7 @@ func TestConfig_VendorErrors(t *testing.T) {
 				assert.Empty(t, lastError,
 					"mapping_vendor should have no error")
 
-			case "bad_vendor":
+			case "bad_vendor_18001":
 				assert.Equal(t, e2e.TaskStatusDeadLetter, taskStatus,
 					"bad_vendor should dead-letter due to invalid YAML")
 				assert.NotEmpty(t, lastError,
@@ -91,7 +91,7 @@ func TestConfig_VendorErrors(t *testing.T) {
 				assert.NotContains(t, lastError, "not configured",
 					"bad_vendor error should be a parse error, not not-configured")
 
-			case "missing_yaml_vendor":
+			case "missing_yaml_vendor_18003":
 				assert.Equal(t, e2e.TaskStatusDeadLetter, taskStatus,
 					"missing_yaml_vendor should dead-letter due to missing vendor.yaml")
 				assert.NotEmpty(t, lastError,
@@ -99,7 +99,7 @@ func TestConfig_VendorErrors(t *testing.T) {
 				assert.NotContains(t, lastError, "not configured",
 					"missing_yaml_vendor error should be a file read error, not not-configured")
 
-			case "invalid_retry_vendor":
+			case "invalid_retry_vendor_18002":
 				assert.Equal(t, e2e.TaskStatusDeadLetter, taskStatus,
 					"invalid_retry_vendor should dead-letter due to invalid retry config")
 				assert.NotEmpty(t, lastError,
@@ -113,11 +113,11 @@ func TestConfig_VendorErrors(t *testing.T) {
 			// the system correctly skips them without attempting delivery).
 			assert.Len(t, e2e.Vendor("mapping_vendor_19093").Requests(), 1,
 				"mapping_vendor should receive 1 request (SUCCEEDED)")
-			assert.Empty(t, e2e.Vendor("bad_vendor").Requests(),
+			assert.Empty(t, e2e.Vendor("bad_vendor_18001").Requests(),
 				"bad_vendor should receive 0 requests (DEAD_LETTER)")
-			assert.Empty(t, e2e.Vendor("missing_yaml_vendor").Requests(),
+			assert.Empty(t, e2e.Vendor("missing_yaml_vendor_18003").Requests(),
 				"missing_yaml_vendor should receive 0 requests (DEAD_LETTER)")
-			assert.Empty(t, e2e.Vendor("invalid_retry_vendor").Requests(),
+			assert.Empty(t, e2e.Vendor("invalid_retry_vendor_18002").Requests(),
 				"invalid_retry_vendor should receive 0 requests (DEAD_LETTER)")
 	})
 }
@@ -173,7 +173,7 @@ func TestConfig_PartialAvailability(t *testing.T) {
 				assert.Empty(t, lastError,
 					"mapping_vendor should have no error")
 
-			case "bad_vendor":
+			case "bad_vendor_18001":
 				assert.Equal(t, e2e.TaskStatusDeadLetter, taskStatus,
 					"bad_vendor should dead-letter due to config error")
 				assert.NotEmpty(t, lastError,
@@ -185,7 +185,7 @@ func TestConfig_PartialAvailability(t *testing.T) {
 		// Verify mock request counts
 		assert.Len(t, e2e.Vendor("mapping_vendor_19093").Requests(), 1,
 			"mapping_vendor should receive 1 request (SUCCEEDED)")
-		assert.Empty(t, e2e.Vendor("bad_vendor").Requests(),
+		assert.Empty(t, e2e.Vendor("bad_vendor_18001").Requests(),
 			"bad_vendor should receive 0 requests (DEAD_LETTER)")
 	})
 }

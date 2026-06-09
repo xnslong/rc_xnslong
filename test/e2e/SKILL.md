@@ -152,8 +152,8 @@ E2E 测试是黑盒测试，**不基于对系统内部实现方式的假设做�
 ```go
 // 正确：即使预期 bad_vendor 收不到请求，mock 也必须启动
 // 然后通过 .Requests() 断言为 0 来验证系统确实没发请求
-assert.Empty(t, e2e.Vendor("bad_vendor").Requests(),
-    "bad_vendor should receive 0 requests due to config error")
+assert.Empty(t, e2e.Vendor("bad_vendor_18001").Requests(),
+    "bad_vendor_18001 should receive 0 requests due to config error")
 
 // 错误：不启动 mock → 测试无法区分"正确没发"和"系统错误但没被发现"
 ```
@@ -264,9 +264,9 @@ func runTests(m *testing.M) int {
     SetupSuite(
         ExcludeVendors("unreachable_vendor_19999"),
         IncludeVendors(
-            VendorSpec{ID: "bad_vendor", Port: 18001},
-            VendorSpec{ID: "invalid_retry_vendor", Port: 18002},
-            VendorSpec{ID: "missing_yaml_vendor", Port: 18003},
+            VendorSpec{ID: "bad_vendor_18001", Port: 18001},
+            VendorSpec{ID: "invalid_retry_vendor_18002", Port: 18002},
+            VendorSpec{ID: "missing_yaml_vendor_18003", Port: 18003},
         ),
     )
     defer TearDownSuite()
@@ -290,11 +290,11 @@ func TestConfig_PartialAvailability(t *testing.T) {
         status, results := waitForDelivery(t, e2e.ServerURL(), notifID, 15*time.Second)
 
         // mapping_vendor: SUCCEEDED
-        // bad_vendor:  DEAD_LETTER → last_error 是 YAML 解析错误，不是 "not configured"
+        // bad_vendor_18001:  DEAD_LETTER → last_error 是 YAML 解析错误，不是 "not configured"
 
         // 即使预期不会收到请求，mock 必须启动才能验证
-        assert.Empty(t, e2e.Vendor("bad_vendor").Requests(),
-            "bad_vendor should receive 0 requests (DEAD_LETTER)")
+        assert.Empty(t, e2e.Vendor("bad_vendor_18001").Requests(),
+            "bad_vendor_18001 should receive 0 requests (DEAD_LETTER)")
     })
 }
 ```

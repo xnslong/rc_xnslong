@@ -25,9 +25,9 @@ func runTests(m *testing.M) int {
 	SetupSuite(
 		ExcludeVendors("unreachable_vendor_19999"),
 		IncludeVendors(
-			VendorSpec{ID: "bad_vendor", Port: 18001},
-			VendorSpec{ID: "invalid_retry_vendor", Port: 18002},
-			VendorSpec{ID: "missing_yaml_vendor", Port: 18003},
+			VendorSpec{ID: "bad_vendor_18001", Port: 18001},
+			VendorSpec{ID: "invalid_retry_vendor_18002", Port: 18002},
+			VendorSpec{ID: "missing_yaml_vendor_18003", Port: 18003},
 		),
 	)
 	defer TearDownSuite()
